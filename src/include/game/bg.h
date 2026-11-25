@@ -79,6 +79,7 @@ bool bgTestHitOnChr(struct model *model, struct coord *arg1, struct coord *arg2,
 bool bgTestHitInVtxBatch(struct coord *arg0, struct coord *arg1, struct coord *arg2, struct vtxbatch *batches, s32 roomnum, struct hitthing *hitthing);
 s32 bg0f1612e4(struct coord *bbmin, struct coord *bbmax, struct coord *frompos, struct coord *dist, struct coord *arg4, struct coord *arg5);
 bool bgTestHitInRoom(struct coord *frompos, struct coord *topos, s32 roomnum, struct hitthing *hitthing);
+bool bgTestHitInRoomShot(struct coord *frompos, struct coord *topos, s32 roomnum, struct hitthing *hitthing);
 bool bgRoomIsLoaded(s32 room);
 bool bgRoomContainsCoord(struct coord *pos, RoomNum roomnum);
 bool bgTestPosInRoomCheap(struct coord *pos, RoomNum roomnum);

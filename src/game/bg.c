@@ -54,6 +54,7 @@
 #include "video.h"
 #include "platform.h"
 #include "gelevels.h"
+#include "lib/collision.h"
 #ifndef PLATFORM_N64
 s32 levelgenIsStage(s32 stagenum);         // levelgenstage.c
 #endif
@@ -5359,6 +5360,59 @@ bool bgTestHitInRoom(struct coord *frompos, struct coord *topos, s32 roomnum, st
 
 			return true;
 		}
+	}
+
+	return false;
+}
+
+/**
+ * MOD: a player's shot against the rooms' drawing. GoldenEye's Facility has
+ * railings that are drawn (so bgTestHitInRoom() hits them) but whose collision
+ * (geo) lets a bullet through, as it does for NPCs. A hit that the collision
+ * says nothing solid is under is skipped and the shot goes on from just past it.
+ */
+bool bgTestHitInRoomShot(struct coord *frompos, struct coord *topos, s32 roomnum, struct hitthing *hitthing)
+{
+	static s32 stage = -1;
+	static bool facility;
+	struct coord start = *frompos;
+	struct coord dir;
+	struct coord beyond;
+	f32 len;
+	s32 i;
+
+	if (stage != g_Vars.stagenum) {
+		const char *name = gelevelsName(g_Vars.stagenum);
+
+		stage = g_Vars.stagenum;
+		facility = name != NULL && strcmp(name, "Facility") == 0;
+	}
+
+	dir.x = topos->x - frompos->x;
+	dir.y = topos->y - frompos->y;
+	dir.z = topos->z - frompos->z;
+	len = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+
+	for (i = 0; i < 8; i++) {
+		if (!bgTestHitInRoom(&start, topos, roomnum, hitthing)) {
+			return false;
+		}
+
+		if (!facility || len < 1.0f || g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+			return true;
+		}
+
+		beyond.x = hitthing->pos.x + dir.x / len * 6.0f;
+		beyond.y = hitthing->pos.y + dir.y / len * 6.0f;
+		beyond.z = hitthing->pos.z + dir.z / len * 6.0f;
+
+		if (!cdTestLos03(frompos, g_Vars.currentplayer->prop->rooms, &beyond, CDTYPE_BG, GEOFLAG_BLOCK_SHOOT)) {
+			return true; // solid: a wall or floor
+		}
+
+		start.x = hitthing->pos.x + dir.x / len * 2.0f;
+		start.y = hitthing->pos.y + dir.y / len * 2.0f;
+		start.z = hitthing->pos.z + dir.z / len * 2.0f;
 	}
 
 	return false;

@@ -860,7 +860,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 
 		bgSetShotPassGlass(isshooting);
 		for (i = 0; rooms[i] != -1; i++) {
-			if (bgTestHitInRoom(&shotdata.gunpos3d, &hitpos, rooms[i], &sp664)) {
+			if (bgTestHitInRoomShot(&shotdata.gunpos3d, &hitpos, rooms[i], &sp664)) {
 				sp664.pos.x *= 1;
 				sp664.pos.y *= 1;
 				sp664.pos.z *= 1;
@@ -1215,7 +1215,7 @@ bool shotTestLos(struct coord *gunpos2d, struct coord *gundir2d, struct coord *g
 
 	// Check for BG hits first
 	for (i = 0; rooms[i] != -1; i++) {
-		if (bgTestHitInRoom(&shotdata.gunpos3d, endpos3d, rooms[i], &hitthing)) {
+		if (bgTestHitInRoomShot(&shotdata.gunpos3d, endpos3d, rooms[i], &hitthing)) {
 			// check if it's far enough away from the end point
 			if (fabsf(hitthing.pos.x - endpos3d->x) >= 0.1f ||
 					fabsf(hitthing.pos.y - endpos3d->y) >= 0.1f ||

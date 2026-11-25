@@ -4327,7 +4327,7 @@ static int edgeIsLedge(const double (*world)[3], const struct tilegeo *geo, size
 	const double dx = b[0] - a[0], dz = b[2] - a[2];
 	const double len = sqrt(dx * dx + dz * dz);
 	double cx = 0.0, cz = 0.0, nx, nz, mx, mz, foot;
-	int found = 0;
+	int found = 0, probes = 0;
 
 	if (len < 1.0) {
 		return 0;
@@ -4363,7 +4363,7 @@ static int edgeIsLedge(const double (*world)[3], const struct tilegeo *geo, size
 			}
 
 			if (tileSurfaceY(world + geo[j].first, geo[j].n, px, pz, &y)) {
-				if (y <= foot - 60.0 && y >= foot - 800.0) {
+				if (y <= foot - 100.0 && y >= foot - 800.0) {
 					lower = 1;
 				} else if (y > foot - 60.0 && y < foot + 60.0) {
 					level = 1;
@@ -4377,11 +4377,13 @@ static int edgeIsLedge(const double (*world)[3], const struct tilegeo *geo, size
 		}
 
 		if (lower) {
-			found = 1;
+			++found;
 		}
+		++probes;
 	}
 
-	return found;
+	/* open drop at every probe: a railing over a void, not a wall to a lower room */
+	return found == probes;
 }
 
 /**
