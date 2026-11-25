@@ -1,4 +1,7 @@
 #include <ultra64.h>
+#include "game/modrules.h"
+#include "game/modrun.h"
+#include "game/modoptions.h"
 #include "constants.h"
 #ifdef PD_CLIPCHECK
 #include "clipcheck.h" // MOD: clipping checks
@@ -29,6 +32,8 @@
 #include "lib/collision.h"
 #include "data.h"
 #include "types.h"
+#include "system.h"
+#include "gelevels.h"
 #ifdef PD_GRAVITY
 #include "gravity.h" // MOD: gravity
 #endif
@@ -373,7 +378,15 @@ bool bwalkCalculateNewPosition(struct coord *vel, f32 rotateamount, bool apply, 
 		zdiff = dstpos.z - g_Vars.currentplayer->prop->pos.z;
 		halfradius = radius * 0.5f;
 
-		if (xdiff > halfradius || zdiff > halfradius || xdiff < -halfradius || zdiff < -halfradius) {
+		// The Randomizer's run seals its room until the room's objective is
+		// done, and the doorway is then a wall from the inside. It is answered
+		// here rather than by throwing the move away afterwards because what
+		// follows a collision reads the collision - the slide along the
+		// obstacle's edge, the push - and modRunSealMove() leaves one to read.
+		if (modRunSealMove(g_Vars.currentplayer->prop->rooms, &g_Vars.currentplayer->prop->pos,
+					dstrooms, &dstpos)) {
+			result = CDRESULT_COLLISION;
+		} else if (xdiff > halfradius || zdiff > halfradius || xdiff < -halfradius || zdiff < -halfradius) {
 			result = cdExamCylMove06(&g_Vars.currentplayer->prop->pos,
 					g_Vars.currentplayer->prop->rooms,
 					&dstpos, dstrooms, radius, types, 1,
@@ -407,6 +420,39 @@ bool bwalkCalculateNewPosition(struct coord *vel, f32 rotateamount, bool apply, 
 			propSetPerimEnabled(g_Vars.currentplayer->tank, true);
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// MOD: what stopped the walk, for levels whose collision is converted (a
+	// doorway that will not let the player through): the prop or the level's
+	// own tile, and where. A line a second at most, and not forever.
+	if (result != CDRESULT_NOCOLLISION && apply && gelevelsIsStage(g_Vars.stagenum)) {
+		static s32 lastframe = -100;
+		static s32 budget = 80;
+
+		if (budget > 0 && g_Vars.lvframenum - lastframe > 40) {
+			struct prop *obstacle = cdGetObstacleProp();
+			struct coord *pp = &g_Vars.currentplayer->prop->pos;
+
+			lastframe = g_Vars.lvframenum;
+			budget--;
+
+			if (obstacle && obstacle->type == PROPTYPE_DOOR && obstacle->door) {
+				sysLogPrintf(LOG_NOTE, "WALK: blocked at (%.0f %.0f %.0f) room %d by door prop %d, frac %.2f of %.2f, perim %.2f, flags %04x",
+						pp->x, pp->y, pp->z, (int)g_Vars.currentplayer->prop->rooms[0],
+						(int)(obstacle - g_Vars.props), obstacle->door->frac, obstacle->door->maxfrac,
+						obstacle->door->perimfrac, (unsigned)obstacle->door->doorflags);
+			} else if (obstacle) {
+				sysLogPrintf(LOG_NOTE, "WALK: blocked at (%.0f %.0f %.0f) room %d by prop %d type %d obj type %d",
+						pp->x, pp->y, pp->z, (int)g_Vars.currentplayer->prop->rooms[0],
+						(int)(obstacle - g_Vars.props), (int)obstacle->type,
+						obstacle->obj ? (int)obstacle->obj->type : -1);
+			} else {
+				sysLogPrintf(LOG_NOTE, "WALK: blocked at (%.0f %.0f %.0f) room %d by the level",
+						pp->x, pp->y, pp->z, (int)g_Vars.currentplayer->prop->rooms[0]);
+			}
+		}
+	}
+#endif
 
 	if (result == CDRESULT_NOCOLLISION && apply) {
 		f32 angle = g_Vars.currentplayer->vv_theta + (rotateamount * 360) / M_BADTAU;

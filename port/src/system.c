@@ -56,6 +56,7 @@ __attribute__((dllexport)) u32 AmdPowerXpressRequestHighPerformance = 1;
 
 static u64 startTick = 0;
 static char logPath[2048];
+static FILE *logFile = NULL; // MOD: the log stays open (opening and closing it per line stalls frames on Windows)
 
 static s32 sysArgc;
 static const char **sysArgv;
@@ -76,13 +77,18 @@ static inline void sysLogSetPath(const char *fname)
 	FILE *f = fopen(logPath, "wb");
 	if (!f) {
 		// try home dir
-		sysGetHomePath(logPath, sizeof(logPath) - 1);
-		strncat(logPath, "/", sizeof(logPath) - 1);
-		strncat(logPath, fname, sizeof(logPath) - 1);
-		f = fopen(logPath, "wb");
+		logPath[0] = '\0';
+		sysGetHomePath(logPath, sizeof(logPath) - strlen(fname) - 1);
+		if (logPath[0]) {
+			strcat(logPath, "/");
+			strcat(logPath, fname);
+			f = fopen(logPath, "wb");
+		}
 	}
 	if (f) {
-		fclose(f);
+		logFile = f; // kept open; every line is flushed to the OS as it is written
+	} else {
+		logPath[0] = '\0';
 	}
 }
 
@@ -96,7 +102,7 @@ void sysInit(void)
 {
 	startTick = sysGetMicroseconds();
 
-	if (sysArgCheck("--log")) {
+	if (!sysArgCheck("--no-log")) {
 		sysLogSetPath(LOG_FNAME);
 	}
 
@@ -189,12 +195,9 @@ void sysLogPrintf(s32 level, const char *fmt, ...)
 		logRingNext++;
 	}
 
-	if (logPath[0]) {
-		FILE *f = fopen(logPath, "ab");
-		if (f) {
-			fprintf(f, "%s%s\n", prefix[level], logmsg);
-			fclose(f);
-		}
+	if (logFile) {
+		fprintf(logFile, "%s%s\n", prefix[level], logmsg);
+		fflush(logFile);
 	}
 
 	FILE *fout = (level == LOG_NOTE) ? stdout : stderr;

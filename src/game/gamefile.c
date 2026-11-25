@@ -176,10 +176,10 @@ void gamefileLoadDefaults(struct gamefile *file)
 
 #ifdef PLATFORM_N64
 	pakSetBitflag(GAMEFILEFLAG_P1_FORWARDPITCH, file->flags, false);
+	pakSetBitflag(GAMEFILEFLAG_P1_AUTOAIM, file->flags, true);
 #else
 	pakSetBitflag(GAMEFILEFLAG_P1_FORWARDPITCH, file->flags, true);
 #endif
-	pakSetBitflag(GAMEFILEFLAG_P1_AUTOAIM, file->flags, true);
 	pakSetBitflag(GAMEFILEFLAG_P1_AIMCONTROL, file->flags, false);
 	pakSetBitflag(GAMEFILEFLAG_P1_SIGHTONSCREEN, file->flags, true);
 #ifdef PLATFORM_N64

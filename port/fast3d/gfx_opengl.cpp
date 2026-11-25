@@ -1124,6 +1124,92 @@ static void gfx_opengl_init(void) {
 static void gfx_opengl_on_resize(void) {
 }
 
+// MOD: screenshots for the level generator's load test (port/src/levelgenloadtest.c):
+// reads framebuffer fb_id (0 = the window's back buffer, winw x winh) into a 24-bit
+// BMP at path. A multisampled framebuffer cannot be read directly: returns 0.
+extern "C" int gfx_opengl_screenshot(int fb_id, uint32_t winw, uint32_t winh, const char *path, uint32_t maxw) {
+    uint32_t w = winw, h = winh;
+    GLuint fbo = 0;
+    GLint prevread = 0;
+
+    if (fb_id > 0) {
+        if ((size_t)fb_id >= framebuffers.size() || framebuffers[fb_id].msaa_level > 1) {
+            return 0;
+        }
+        fbo = framebuffers[fb_id].fbo;
+        w = framebuffers[fb_id].width;
+        h = framebuffers[fb_id].height;
+    }
+    if (w == 0 || h == 0 || w > 8192 || h > 8192) {
+        return 0;
+    }
+
+    std::vector<uint8_t> px((size_t)w * h * 3);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevread);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    if (fbo == 0) {
+        glReadBuffer(GL_BACK);
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevread);
+
+    // maxw > 0: shrunk by a whole number (averaging each block) to at most maxw pixels across,
+    // so that the room tour's hundreds of pictures stay small
+    if (maxw > 0 && w > maxw) {
+        const uint32_t div = (w + maxw - 1) / maxw;
+        const uint32_t ow = w / div, oh = h / div;
+        std::vector<uint8_t> shrunk((size_t)ow * oh * 3);
+
+        for (uint32_t y = 0; y < oh; y++) {
+            for (uint32_t x = 0; x < ow; x++) {
+                uint32_t sum[3] = { 0, 0, 0 };
+
+                for (uint32_t dy = 0; dy < div; dy++) {
+                    for (uint32_t dx = 0; dx < div; dx++) {
+                        const uint8_t *q = &px[((size_t)(y * div + dy) * w + (x * div + dx)) * 3];
+                        sum[0] += q[0]; sum[1] += q[1]; sum[2] += q[2];
+                    }
+                }
+                for (int c = 0; c < 3; c++) {
+                    shrunk[((size_t)y * ow + x) * 3 + c] = (uint8_t)(sum[c] / (div * div));
+                }
+            }
+        }
+        px.swap(shrunk);
+        w = ow;
+        h = oh;
+    }
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        return 0;
+    }
+    const uint32_t rowbytes = (w * 3 + 3) & ~3u;
+    const uint32_t imgbytes = rowbytes * h;
+    uint8_t hdr[54] = { 'B', 'M' };
+    const uint32_t fields[] = { 54 + imgbytes, 0, 54, 40, w, h };
+    for (int i = 0; i < 6; i++) {
+        for (int b = 0; b < 4; b++) hdr[2 + 4 * i + b] = (uint8_t)(fields[i] >> (8 * b));
+    }
+    hdr[26] = 1;            // planes
+    hdr[28] = 24;           // bits per pixel
+    for (int b = 0; b < 4; b++) hdr[34 + b] = (uint8_t)(imgbytes >> (8 * b));
+    fwrite(hdr, 1, 54, fp);
+    std::vector<uint8_t> row(rowbytes, 0);
+    for (uint32_t y = 0; y < h; y++) {   // GL rows run bottom-up, as BMP's do
+        const uint8_t *src = &px[(size_t)y * w * 3];
+        for (uint32_t x = 0; x < w; x++) {
+            row[3 * x] = src[3 * x + 2];
+            row[3 * x + 1] = src[3 * x + 1];
+            row[3 * x + 2] = src[3 * x];
+        }
+        fwrite(row.data(), 1, rowbytes, fp);
+    }
+    fclose(fp);
+    return 1;
+}
+
 static void gfx_opengl_start_frame(void) {
     frame_count++;
 }

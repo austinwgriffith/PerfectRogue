@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modoptions.h"
 #include "constants.h"
 #include "game/inv.h"
 #include "game/bondgun.h"
@@ -265,5 +266,8 @@ void bgunReset(void)
 		g_Weapons[WEAPON_EYESPY]->flags |= (WEAPONFLAG_DETERMINER_S_AN | WEAPONFLAG_DETERMINER_F_AN);
 	}
 
+#ifndef PLATFORM_N64
+	bgunQuickReset();
+#endif
 	bgunInitHandAnims();
 }

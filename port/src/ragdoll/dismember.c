@@ -5,6 +5,7 @@
  */
 
 #include "rd_internal.h"
+#include <string.h>
 
 #ifdef PD_PHYSICS
 
@@ -1388,6 +1389,19 @@ static bool ragdollSever(struct ragdoll *rd, s32 part, const f32 *vel)
 	return true;
 }
 
+/**
+ * A body in the way of a closing door loses the limb that is blocking it, or is
+ * cut in half (part 1, the waist). False when nothing could be cut.
+ */
+bool ragdollSeverForDoor(struct ragdoll *rd, s32 part)
+{
+	if (!g_RagdollDismember) {
+		return false;
+	}
+
+	return ragdollSever(rd, part, NULL);
+}
+
 // The joint to cut for a hit on this hitpart, or -1
 static s32 ragdollCutPartForHit(struct ragdoll *rd, s32 hitpart, f32 damage)
 {
@@ -1576,7 +1590,11 @@ void ragdollTryDismemberShot(struct ragdoll *rd, s32 hitpart, struct coord *dir,
 		}
 	}
 
-	strong = damage >= g_RagdollDismemberDamage || gset->weaponnum == WEAPON_REAPER || laserstream;
+	// The K7 Avenger is a rifle but its 1.5 damage burst is below the normal
+	// damage threshold. It is nevertheless one of the weapons that can sever
+	// limbs, so keep it in the explicit dismember-capable set.
+	strong = damage >= g_RagdollDismemberDamage || gset->weaponnum == WEAPON_REAPER
+		|| gset->weaponnum == WEAPON_K7AVENGER || laserstream;
 
 	// (The Reaper's blades always cut: they're a grinder)
 	if (!strong || (gset->weaponnum != WEAPON_REAPER
@@ -1596,119 +1614,163 @@ void ragdollTryDismemberShot(struct ragdoll *rd, s32 hitpart, struct coord *dir,
 }
 
 /**
- * prop.c, the player firing the shotgun: Begin, a Pellet before each of its
- * pellets, End after. chr.c reports each pellet that hits a chr.
+ * The shotgun, by distance: a pellet that hits a body at close range takes
+ * off the limb it hit (one limb per body per blast). The body is usually still
+ * alive when the pellet lands, so the hit is kept for a few frames and applied
+ * once the body is a ragdoll; a body that survives the blast keeps its limbs.
+ * (The old per-volley rule needed prop.c to call the volley hooks, and
+ * nothing ever did.)
  */
+#define RD_SHOTGUN_CUTS 8
+#define RD_SHOTGUN_CUTFRAMES 30
+
+static struct {
+	struct chrdata *chr;
+	s32 hitpart;
+	struct coord dir;
+	s32 age;
+} g_RdShotgunCuts[RD_SHOTGUN_CUTS];
+
+/**
+ * The pellets of the current blast that have hit each body (this frame), for
+ * the death that follows: ragdollShotgunBlastInfo() says how many and how
+ * close the nearest was.
+ */
+#define RD_SHOTGUN_BLASTS 8
+
+static struct {
+	struct chrdata *chr;
+	s32 frame60;
+	s32 pellets;
+	f32 distance;
+} g_RdShotgunBlasts[RD_SHOTGUN_BLASTS];
+
+static void ragdollShotgunRecordPellet(struct chrdata *chr, f32 distance)
+{
+	s32 i;
+	s32 slot = -1;
+
+	for (i = 0; i < RD_SHOTGUN_BLASTS; i++) {
+		if (g_RdShotgunBlasts[i].chr == chr && g_Vars.lvframe60 - g_RdShotgunBlasts[i].frame60 <= 1) {
+			g_RdShotgunBlasts[i].pellets++;
+
+			if (distance < g_RdShotgunBlasts[i].distance) {
+				g_RdShotgunBlasts[i].distance = distance;
+			}
+
+			g_RdShotgunBlasts[i].frame60 = g_Vars.lvframe60;
+			return;
+		}
+
+		if (slot < 0 && (g_RdShotgunBlasts[i].chr == NULL || g_Vars.lvframe60 - g_RdShotgunBlasts[i].frame60 > 1)) {
+			slot = i;
+		}
+	}
+
+	if (slot >= 0) {
+		g_RdShotgunBlasts[slot].chr = chr;
+		g_RdShotgunBlasts[slot].frame60 = g_Vars.lvframe60;
+		g_RdShotgunBlasts[slot].pellets = 1;
+		g_RdShotgunBlasts[slot].distance = distance;
+	}
+}
+
+bool ragdollShotgunBlastInfo(struct chrdata *chr, s32 *pellets, f32 *distance)
+{
+	s32 i;
+
+	for (i = 0; i < RD_SHOTGUN_BLASTS; i++) {
+		if (g_RdShotgunBlasts[i].chr == chr && g_Vars.lvframe60 - g_RdShotgunBlasts[i].frame60 <= 1) {
+			*pellets = g_RdShotgunBlasts[i].pellets;
+			*distance = g_RdShotgunBlasts[i].distance;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 void ragdollShotgunVolleyBegin(void)
 {
-	memset(&g_RdVolley, 0, sizeof(g_RdVolley));
-	g_RdVolley.active = true;
 }
 
 void ragdollShotgunPellet(void)
 {
-	if (g_RdVolley.active) {
-		g_RdVolley.pellets++;
-		g_RdVolley.pellethit = false;
-	}
-}
-
-void ragdollShotgunPelletHit(struct chrdata *chr, s32 hitpart, struct coord *dir, struct gset *gset)
-{
-	struct rdvolley *v = &g_RdVolley;
-
-	if (!v->active || v->pellethit || gset == NULL || gset->weaponnum != WEAPON_SHOTGUN) {
-		return;
-	}
-
-	v->pellethit = true;
-
-	if (v->hits == 0) {
-		v->chr = chr;
-	} else if (v->chr != chr) {
-		v->chr = NULL; // pellets on more than one body
-	}
-
-	if (v->hits < RD_VOLLEY_MAXPELLETS) {
-		v->hitparts[v->hits] = hitpart;
-	}
-
-	v->hits++;
-	v->dir = *dir;
-	v->gset = *gset;
 }
 
 void ragdollShotgunVolleyEnd(void)
 {
-	RD_CRASHCTX("shotgunvolley", -1, -1);
-	struct rdvolley *v = &g_RdVolley;
-	struct ragdoll *rd;
-	s32 target = -1;
+}
+
+void ragdollShotgunPelletHit(struct chrdata *chr, s32 hitpart, struct coord *dir, struct gset *gset, f32 distance)
+{
 	s32 i;
-	f32 vel[3];
+	s32 free = -1;
 
-	if (!v->active) {
+	if (chr != NULL && gset != NULL && gset->weaponnum == WEAPON_SHOTGUN) {
+		ragdollShotgunRecordPellet(chr, distance);
+	}
+
+	if (!g_RagdollDismember || chr == NULL || chr->noblood || dir == NULL || gset == NULL
+			|| gset->weaponnum != WEAPON_SHOTGUN || distance > RD_SHOTGUN_CLOSERANGE
+			|| hitpart < 0 || hitpart >= 20) {
 		return;
 	}
 
-	v->active = false;
-
-	// Every pellet hit, all on the same body, which is now dead
-	if (!g_RagdollDismember || v->chr == NULL || v->pellets <= 0 || v->hits != v->pellets
-			|| v->hits > RD_VOLLEY_MAXPELLETS || v->chr->noblood) {
-		return;
-	}
-
-	rd = ragdollFindByChr(v->chr);
-
-	if (rd == NULL) {
-		return;
-	}
-
-	// ... and on one limb: the piece nearest the body that was hit, with
-	// every other pellet on it or further out the same limb
-	for (i = 0; i < v->hits; i++) {
-		s32 hp = v->hitparts[i];
-		s32 sp;
-
-		if (hp < 0 || hp >= 20) {
-			return;
+	for (i = 0; i < RD_SHOTGUN_CUTS; i++) {
+		if (g_RdShotgunCuts[i].chr == chr) {
+			return; // this body already has a limb coming off
 		}
 
-		sp = rdHitpartPart(rd, hp);
+		if (free < 0 && g_RdShotgunCuts[i].chr == NULL) {
+			free = i;
+		}
+	}
 
-		if (sp <= 1) {
-			return; // torso or pelvis
+	if (free >= 0) {
+		g_RdShotgunCuts[free].chr = chr;
+		g_RdShotgunCuts[free].hitpart = hitpart;
+		g_RdShotgunCuts[free].dir = *dir;
+		g_RdShotgunCuts[free].age = 0;
+	}
+}
+
+void ragdollShotgunCutsTick(void)
+{
+	s32 i;
+
+	for (i = 0; i < RD_SHOTGUN_CUTS; i++) {
+		struct ragdoll *rd;
+		s32 part;
+		f32 vel[3];
+
+		if (g_RdShotgunCuts[i].chr == NULL) {
+			continue;
 		}
 
-		if (target < 0) {
-			target = sp;
-		} else if (sp != target) {
-			s32 a;
+		rd = ragdollFindByChr(g_RdShotgunCuts[i].chr);
 
-			// sp further out from target: fine
-			for (a = sp; a > 0 && a != target; a = rd->skel->parent[a]);
+		if (rd == NULL) {
+			if (++g_RdShotgunCuts[i].age > RD_SHOTGUN_CUTFRAMES) {
+				g_RdShotgunCuts[i].chr = NULL;
+			}
 
-			if (a != target) {
-				// target further out from sp: sp becomes the cut
-				for (a = target; a > 0 && a != sp; a = rd->skel->parent[a]);
+			continue;
+		}
 
-				if (a != sp) {
-					return; // two different limbs
-				}
+		if ((s32)(rngRandom() % 100) < g_RagdollDismemberChance) {
+			part = ragdollCutPartForHit(rd, g_RdShotgunCuts[i].hitpart, 1.0f);
 
-				target = sp;
+			if (part > 1) {
+				struct coord *d = &g_RdShotgunCuts[i].dir;
+
+				rdVecSet(vel, d->x * 350.0f * rd->pushscale, d->y * 350.0f * rd->pushscale + 120.0f, d->z * 350.0f * rd->pushscale);
+				ragdollSever(rd, part, vel);
 			}
 		}
+
+		g_RdShotgunCuts[i].chr = NULL;
 	}
-
-	if (target <= 1 || (s32)(rngRandom() % 100) >= g_RagdollDismemberChance) {
-		return;
-	}
-
-	rdVecSet(vel, v->dir.x * 350.0f * rd->pushscale, v->dir.y * 350.0f * rd->pushscale + 120.0f, v->dir.z * 350.0f * rd->pushscale);
-
-	ragdollSever(rd, target, vel);
 }
 
 /**
@@ -1915,6 +1977,94 @@ Gfx *ragdollRenderCaps(Gfx *gdl, struct chrdata *chr)
 }
 
 /**
+ * MOD: gore - a body that was shot leaves a trail of blood splats where it
+ * slides: one every 30 units of its way. Along the floor (hips within 45 of
+ * it) a puddle on the floor under the hips; against a wall (one within 35 of
+ * the hips, level with them, at any height: a body sliding down it) a splat
+ * on the wall; both when it is on the floor beside one. The first is size 1.0
+ * and each is smaller than the last down to 0.4, forty at most. A body in the
+ * air with no wall by it leaves nothing, and the trail starts again where it
+ * lands. Dead or dying bodies only (not a knockout), and only those with a
+ * wound on their list (chrDamage(): woundmask), as the pools are. All of it
+ * the game's own splats (splatCreateTrail(), splatCreateTrailWall()).
+ */
+#define RD_TRAIL_SPACING 30.0f
+#define RD_TRAIL_MAX     40
+#define RD_TRAIL_WALL    35.0f
+
+void ragdollBloodTrail(struct ragdoll *rd)
+{
+	static s32 budgetframe = -1;
+	static s32 budget = 0;
+	struct coord at;
+	f32 dx;
+	f32 dy;
+	f32 dz;
+	f32 size;
+	bool onfloor;
+	s32 made;
+
+	if (rd->chr == NULL || rd->chr->noblood || rd->chr->woundmask == 0 || rd->prop == NULL || rd->prop->rooms[0] < 0
+			|| (rd->chr->actiontype != ACT_DIE && rd->chr->actiontype != ACT_DEAD)
+			|| rd->trailcount >= RD_TRAIL_MAX) {
+		return;
+	}
+
+	at.x = rd->world[0].m[3][0];
+	at.y = rd->world[0].m[3][1];
+	at.z = rd->world[0].m[3][2];
+
+	if (!rd->trailset) {
+		rd->trailset = true;
+		rd->trailpos[0] = at.x;
+		rd->trailpos[1] = at.y;
+		rd->trailpos[2] = at.z;
+		return;
+	}
+
+	dx = at.x - rd->trailpos[0];
+	dy = at.y - rd->trailpos[1];
+	dz = at.z - rd->trailpos[2];
+
+	if (dx * dx + dy * dy + dz * dz < RD_TRAIL_SPACING * RD_TRAIL_SPACING) {
+		return;
+	}
+
+	if (budgetframe != g_Vars.lvframe60) {
+		budgetframe = g_Vars.lvframe60;
+		budget = 2;
+	}
+
+	if (budget <= 0) {
+		return;
+	}
+
+	budget--;
+
+	size = 1.0f - rd->trailcount * 0.015f;
+
+	if (size < 0.4f) {
+		size = 0.4f;
+	}
+
+	onfloor = at.y - rd->chr->ground <= 45.0f;
+	made = splatCreateTrailWall(rd->prop, rd->chr, &at, size, RD_TRAIL_WALL);
+
+	if (onfloor) {
+		splatCreateTrail(rd->prop, rd->chr, &at, size);
+		made = 1;
+	}
+
+	rd->trailpos[0] = at.x;
+	rd->trailpos[1] = at.y;
+	rd->trailpos[2] = at.z;
+
+	if (made) {
+		rd->trailcount++;
+	}
+}
+
+/**
  * While the body is still moving, the cut ends spray blood.
  */
 void ragdollBleed(struct ragdoll *rd)
@@ -1923,6 +2073,7 @@ void ragdollBleed(struct ragdoll *rd)
 	static s32 budgetframe = -1;
 	static s32 budget = 0;
 	static s32 splatbudget = 0;
+	static s32 headbudget = 0;
 	bool dosplat;
 	s32 i;
 
@@ -1936,6 +2087,7 @@ void ragdollBleed(struct ragdoll *rd)
 
 	rd->bleed60 += g_Vars.lvupdate60;
 	rd->splat60 += g_Vars.lvupdate60;
+	rd->headsplat60 += g_Vars.lvupdate60;
 
 	if (rd->bleed60 < 4) {
 		return;
@@ -1952,6 +2104,70 @@ void ragdollBleed(struct ragdoll *rd)
 		budgetframe = g_Vars.lvframe60;
 		budget = 6;
 		splatbudget = 2;
+		headbudget = 3;
+	}
+
+	// MOD: gore - a cut-off head in flight sprays the walls near it and, as
+	// it tumbles, the floor under it. The game's own splat code does the
+	// finding: a ray from the head that ends on the level within ~1.8 m
+	// leaves a decal there, so a head across the room from every wall leaves
+	// none. Moving only (a head lying still, against a wall too, is done
+	// bleeding), every ~0.15 s, a wall in a random direction and the floor.
+	{
+		s32 headpart = rdHitpartPart(rd, HITPART_HEAD);
+
+		if (headpart > 0 && (rd->severed & (1u << headpart)) && rd->headsplat60 >= 5) {
+			f32 moved[3];
+			struct coord hp;
+
+			hp.x = rd->world[headpart].m[3][0];
+			hp.y = rd->world[headpart].m[3][1];
+			hp.z = rd->world[headpart].m[3][2];
+
+			rdVecSet(moved, hp.x - rd->headprev[0], hp.y - rd->headprev[1], hp.z - rd->headprev[2]);
+			rd->headsplat60 = 0;
+			rd->headprev[0] = hp.x;
+			rd->headprev[1] = hp.y;
+			rd->headprev[2] = hp.z;
+
+			if (rdVecLen(moved) > 2.5f && !rd->cutpaint[headpart]) {
+				s32 k;
+				extern f32 g_SplatMaxDistance;
+				f32 savedmax = g_SplatMaxDistance;
+
+				// short reach: only surfaces close to the head get blood
+				g_SplatMaxDistance = 70.0f;
+
+				for (k = 0; k < 2 && headbudget > 0; k++) {
+					struct shotdata sd;
+					f32 d[3];
+
+					if (k == 0) {
+						// a wall: any of eight ways round, a little downwards
+						f32 a = (s32)(rngRandom() % 8) * 0.785398f + ((s32)(rngRandom() % 21) - 10) * 0.01f;
+
+						rdVecSet(d, cosf(a), -0.15f, sinf(a));
+					} else {
+						// the floor, a little off straight down
+						rdVecSet(d, ((s32)(rngRandom() % 21) - 10) * 0.03f, -1.0f, ((s32)(rngRandom() % 21) - 10) * 0.03f);
+					}
+
+					rdVecNorm(d);
+
+					memset(&sd, 0, sizeof(sd));
+					sd.gunpos3d = hp;
+					sd.gunpos2d = hp;
+					sd.gundir3d.x = sd.gundir2d.x = d[0];
+					sd.gundir3d.y = sd.gundir2d.y = d[1];
+					sd.gundir3d.z = sd.gundir2d.z = d[2];
+
+					splatsCreate(1, 1.0f, rd->prop, &sd, &hp, &hp, CHRRACE(rd->chr) == RACE_SKEDAR, 0, TICKS(50), rd->chr, 0);
+					headbudget--;
+				}
+
+				g_SplatMaxDistance = savedmax;
+			}
+		}
 	}
 
 	// Blood decals where the spray lands, every ~0.3 s per cut end
@@ -2002,7 +2218,11 @@ void ragdollBleed(struct ragdoll *rd)
 			sd.gundir3d.y = sd.gundir2d.y = d[1];
 			sd.gundir3d.z = sd.gundir2d.z = d[2];
 
-			splatsCreate(1, 0.8f, rd->prop, &sd, &pos, &pos, false, 0, TICKS(50), rd->chr, 0);
+			// MOD: gore - the neck stump left on the body splats as big as a
+			// headshot's (splat.c, 1.3); every other cut end keeps stock's 0.8
+			f32 size = (cap->cut > 0 && cap->cut == rdHitpartPart(rd, HITPART_HEAD) && cap->part != cap->cut) ? 1.3f : 0.8f;
+
+			splatsCreate(1, size, rd->prop, &sd, &pos, &pos, false, 0, TICKS(50), rd->chr, 0);
 			splatbudget--;
 		}
 	}

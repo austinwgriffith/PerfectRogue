@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the Perfect Dark PC port (ntsc-final, x86_64) and refresh ../../pd_pc_build
-# (or the folder in PD_OUT_DIR). Run from the MSYS2 "MINGW64" shell (not the
+# Build the Perfect Dark PC port (ntsc-final, x86_64) and refresh the game folder
+# one level up (or the folder in PD_OUT_DIR). Run from the MSYS2 "MINGW64" shell (not the
 # plain "MSYS" one):
 #   cd "<the port folder>"
 #   ./build_windows.sh            # incremental build
@@ -14,14 +14,14 @@ if [ "$MSYSTEM" != "MINGW64" ]; then
   exit 1
 fi
 
-BUILD_DIR=build_win
-OUT_DIR="${PD_OUT_DIR:-../../pd_pc_build}"
+BUILD_DIR=build-codex
+OUT_DIR="${PD_OUT_DIR:-..}"
 
 if [ "$1" = "clean" ]; then
   rm -rf "$BUILD_DIR"
 fi
 
-cmake -G"Unix Makefiles" -B "$BUILD_DIR" .
+cmake -G"Unix Makefiles" -B "$BUILD_DIR" -DJOLT_DIR=build-win/_deps/joltphysics-src .
 cmake --build "$BUILD_DIR" -j"$(nproc)" -- -O
 
 mkdir -p "$OUT_DIR/data"

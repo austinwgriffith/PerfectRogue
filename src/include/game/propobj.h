@@ -145,6 +145,10 @@ struct prop *liftFindByPad(s16 padnum);
 f32 liftGetY(struct liftobj *lift);
 void liftUpdateTiles(struct liftobj *lift, bool stationary);
 void liftGoToStop(struct liftobj *lift, s32 stopnum);
+#ifndef PLATFORM_N64
+bool liftLevelgenInteract(void);
+#endif
+void liftResetPlayerCalls(void);
 f32 objGetHovBobOffsetY(struct defaultobj *obj);
 void hovUpdateGround(struct defaultobj *obj, struct hov *hov, struct coord *pos, RoomNum *rooms, f32 matrix[3][3]);
 void hovTick(struct defaultobj *obj, struct hov *hov);

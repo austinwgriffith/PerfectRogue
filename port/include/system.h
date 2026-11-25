@@ -50,10 +50,22 @@ void crashReinstall(void);
 // the main thread's stack if frames stop for 10 s (Windows)
 void crashHeartbeat(void);
 
+// MOD: crash recovery (Windows x64). A fault on the main thread while armed
+// (the game logic and render of one frame, pdmain.c mainTick()) is logged and
+// the frame abandoned with a __builtin_longjmp to crashRecoverBuf(), instead
+// of ending the game. Stack overflows and faults anywhere else stay fatal, and
+// so do too many in a short time.
+#if defined(_WIN32) && defined(__x86_64__)
+#define CRASH_RECOVERY 1
+void **crashRecoverBuf(void);
+void crashRecoverArm(void);
+void crashRecoverDisarm(void);
+#endif
+
 // MOD: crash logs
 // Writes pd.crash.log (latest) and pd.crash-<date>-<time>.log next to pd.log:
 // the given text, the extra info from the registered callback and the last
-// lines of the log (kept in memory even without --log)
+// lines of the log (kept in memory even with --no-log)
 void sysWriteCrashLog(const char *text);
 // Writes a short pd.crash.log straight away, before the crash handler does
 // anything that could fail (stack walk, extra info); the full log replaces it

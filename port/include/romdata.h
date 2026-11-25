@@ -11,12 +11,14 @@ s32 romdataInit(void);
 u8 *romdataFileLoad(s32 fileNum, u32 *outSize);
 void romdataFilePreprocess(s32 fileNum, s32 loadType, u8 *data, u32 size, u32 *outSize);
 void romdataFileFree(s32 fileNum);
+void romdataFileReload(s32 fileNum); // MOD: level generator: forget an added file so the next load reads it again
 const char *romdataFileGetName(s32 fileNum);
 
 u8 *romdataFileGetData(s32 fileNum);
 s32 romdataFileGetSize(s32 fileNum);
 
 s32 romdataFileGetNumForName(const char *name);
+s32 romdataFileAdd(const char *name, const char *path);
 
 u8 *romdataSegGetData(const char *segName);
 u8 *romdataSegGetDataEnd(const char *segName);

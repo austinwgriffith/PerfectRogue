@@ -15,6 +15,9 @@ void wallhitFade(struct wallhit *wallhit, u32 arg1);
 bool wallhitRemoveOneInRoom(s32 arg0);
 void wallhitRemoveOne(void);
 void wallhitsTick(void);
+#ifndef PLATFORM_N64
+void wallhitBeginViewport(void);
+#endif
 
 void wallhitCreate(struct coord *relpos, struct coord *arg1, struct coord *arg2, s16 arg3[3],
 		s16 arg4[3], s16 texnum, RoomNum room, struct prop *objprop,

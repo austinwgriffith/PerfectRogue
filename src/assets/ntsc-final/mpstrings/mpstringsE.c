@@ -342,7 +342,7 @@ static struct mpstrings strings[] = {
 	},
 	// MPCONFIG_CHALLENGE11
 	{
-		"King of the Hill  against expert simulants. Weapons include the Shotgun and Tranquilizer.",
+		"King of the Hill  against expert simulants. Weapons include the Super Shotgun and Tranquilizer.",
 		{
 			"BlondeSim:1\n",
 			"BlondeSim:2\n",

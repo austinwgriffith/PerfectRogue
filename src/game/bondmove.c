@@ -1,4 +1,6 @@
 #include <ultra64.h>
+#include "game/modoptions.h"
+#include "game/modspawnedit.h"
 #include "constants.h"
 #include "game/activemenu.h"
 #include "game/bondbike.h"
@@ -80,10 +82,18 @@ static s32 bmoveHoldTimerInc(s32 value, s32 which)
 #define AIMTAPTIME_INC() g_Vars.currentplayer->aimtaptime++
 #endif
 
+static bool bmoveHasDetonator(s32 weaponnum)
+{
+#ifndef PLATFORM_N64
+	if (bgunQuickRemotePlaced()) return true;
+#endif
+	return weaponnum == WEAPON_REMOTEMINE;
+}
+
 static void bgunProcessQuickDetonate(struct movedata *data, u32 c1buttons, u32 c1buttonsthisframe, u32 buttons1, u32 buttons2) {
 	if ((((c1buttons & (buttons1)) && (c1buttonsthisframe & (buttons2)))
 			|| ((c1buttons & (buttons2)) && (c1buttonsthisframe & (buttons1))))
-			&& bgunGetWeaponNum(HAND_RIGHT) == WEAPON_REMOTEMINE) {
+			&& bmoveHasDetonator(bgunGetWeaponNum(HAND_RIGHT))) {
 		data->detonating = true;
 		data->weaponbackoffset = 0;
 		data->weaponforwardoffset = 0;
@@ -821,6 +831,27 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		g_Vars.currentplayer->joybutinhibit = (g_Vars.currentplayer->joybutinhibit & 0x0) | inhibitedbuttons;
 	}
 
+#ifndef PLATFORM_N64
+	// MOD: Spawn Customizer - the gun is not fired or aimed while the editor is
+	// open, whatever Fire and Aim are bound to: the mouse buttons place and
+	// delete spawns (modspawnedit.c reads them itself)
+	if (modSpawnEditIsOn()) {
+		c1buttons &= ~(Z_TRIG | R_TRIG);
+		c1buttonsthisframe &= ~(Z_TRIG | R_TRIG);
+	}
+
+	// ... and while its menu is open the player holds still: the arrow keys
+	// and the rest belong to the menu
+	if (modSpawnEditMenuOpen()) {
+		c1stickx = 0;
+		c1sticky = 0;
+		c2stickx = 0;
+		c2sticky = 0;
+		c1buttons = 0;
+		c1buttonsthisframe = 0;
+	}
+#endif
+
 	numsamples = joyGetNumSamples();
 	bmoveResetMoveData(&movedata);
 
@@ -852,6 +883,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 #ifndef PLATFORM_N64
 	if (allowmlook) {
 		inputMouseGetScaledDelta(&movedata.freelookdx, &movedata.freelookdy);
+		if (modSpawnEditMenuOpen()) {
+			movedata.freelookdx = 0.0f;
+			movedata.freelookdy = 0.0f;
+		}
 		allowmcross = (PLAYER_EXTCFG().mouseaimmode == MOUSEAIM_CLASSIC) &&
 			(movedata.freelookdx || movedata.freelookdy || g_Vars.currentplayer->swivelpos[0] || g_Vars.currentplayer->swivelpos[1]);
 		if (movedata.invertpitch) {
@@ -860,7 +895,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	}
 	// always pause with ESC
 	if (allowc1buttons && g_Vars.currentplayer->isdead == false && g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED) {
-		if (inputKeyJustPressed(VK_ESCAPE)) {
+		if (!modSpawnEditEatsEscape() && inputKeyJustPressed(VK_ESCAPE)) {
 			c1buttonsthisframe |= START_BUTTON;
 		}
 	}
@@ -1254,7 +1289,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 								|| ((c1buttons & B_BUTTON) && (c1buttonsthisframe & A_BUTTON))
 								|| ((c2buttons & A_BUTTON) && (c2buttonsthisframe & B_BUTTON))
 								|| ((c2buttons & B_BUTTON) && (c2buttonsthisframe & A_BUTTON)))
-							&& weaponnum == WEAPON_REMOTEMINE) {
+							&& bmoveHasDetonator(weaponnum)) {
 						movedata.detonating = true;
 						movedata.weaponbackoffset = 0;
 						movedata.weaponforwardoffset = 0;
@@ -1850,7 +1885,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 					if (controlmode != CONTROLMODE_PC) {
 						if ((((c1buttons & invbuttons) && (c1buttonsthisframe & B_BUTTON))
 								|| ((c1buttons & B_BUTTON) && (c1buttonsthisframe & invbuttons)))
-								&& weaponnum == WEAPON_REMOTEMINE) {
+								&& bmoveHasDetonator(weaponnum)) {
 							movedata.detonating = true;
 							movedata.weaponbackoffset = 0;
 							movedata.weaponforwardoffset = 0;
@@ -1922,6 +1957,10 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		movedata.speedvertaup = savedverta;
 	}
 
+#ifndef PLATFORM_N64
+	bgunQuickTick(allowc1buttons && !modSpawnEditIsOn() && !modSpawnEditMenuOpen()
+			&& g_Vars.currentplayer->activemenumode == AMMODE_CLOSED, c1buttons, c1buttonsthisframe);
+#endif
 	bgunTickGameplay(movedata.triggeron);
 
 	if (g_Vars.bondvisible && (bgunIsFiring(HAND_RIGHT) || bgunIsFiring(HAND_LEFT))) {
@@ -2204,6 +2243,12 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		cancycleweapons = false;
 	}
 
+#ifndef PLATFORM_N64
+	if (modSpawnEditIsOn()) {
+		cancycleweapons = false; // the wheel chooses the kind of spawn
+	}
+#endif
+
 	if (cancycleweapons) {
 		while (movedata.weaponbackoffset-- > 0) {
 			bgunCycleBack();
@@ -2427,6 +2472,20 @@ void bmoveTick(bool allowc1x, bool allowc1y, bool allowc1buttons, bool ignorec2)
 	} else if (g_Vars.currentplayer->bondmovemode == MOVEMODE_CUTSCENE) {
 		bcutsceneTick();
 	} else if (g_Vars.currentplayer->bondmovemode == MOVEMODE_WALK) {
+#ifndef PLATFORM_N64
+		// MOD: Spawn Customizer - free flight in place of walking
+		if (modSpawnEditIsOn() && g_Vars.currentplayer == g_Vars.bond) {
+			if (modSpawnEditFlying()) {
+				modSpawnEditFlyTick();
+			} else {
+				// walking, with gravity and the map's collision; the markers
+				// (characters, laptops) are not solid; Space takes off
+				g_Vars.bondcollisions = false;
+				bwalkTick();
+				modSpawnEditWalkTick();
+			}
+		} else
+#endif
 		bwalkTick();
 	}
 

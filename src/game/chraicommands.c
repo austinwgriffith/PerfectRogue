@@ -1,6 +1,13 @@
 #include <ultra64.h>
+#include "game/modrun.h"
+#include "game/modrandom.h"
+#include "game/modspawnedit.h"
+#include "game/modoptions.h"
+#include "game/modrules.h"
+#include "guardvoice.h"
 #include "../lib/naudio/n_sndp.h"
 #include "constants.h"
+#include "prcompat.h"
 #include "game/bondmove.h"
 #include "game/cheats.h"
 #include "game/chraction.h"
@@ -399,6 +406,11 @@ bool aiChrDoAnimation(void)
 
 	if (g_Vars.chrdata) {
 		chr = chrFindById(g_Vars.chrdata, cmd[10]);
+	}
+
+	if (chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER && modRandomCutsceneMuted()) {
+		g_Vars.aioffset += 12;
+		return false;
 	}
 
 	if (startframe == 0xffff) {
@@ -2435,7 +2447,17 @@ bool aiIfDoorState(void)
 	struct defaultobj *obj = objFindByTagId(cmd[2]);
 	bool pass = false;
 
-	if (obj && obj->prop && obj->type == OBJTYPE_DOOR) {
+	if (obj && obj->prop && obj->type == OBJTYPE_DOOR
+#ifndef PLATFORM_N64
+			// Villa's ending script (list 100e) treats the cellar doors (8 and 9)
+			// opening as "Carrington has been rescued": it made the player
+			// invincible, started the ending and left the basement with no
+			// pickups for the rest of the mission. A generated mission ends
+			// on its own objectives, so the doors are never reported open.
+			&& !(modRandomIsOn() && g_Vars.stagenum == STAGE_VILLA && (cmd[2] == 8 || cmd[2] == 9)
+				&& (cmd[3] & DOORSTATE_OPEN) && !(cmd[3] & (DOORSTATE_CLOSED | DOORSTATE_OPENING | DOORSTATE_CLOSING)))
+#endif
+			) {
 		struct doorobj *door = (struct doorobj *) obj;
 
 		if (door->mode == DOORMODE_IDLE) {
@@ -2488,7 +2510,7 @@ bool aiLockDoor(void)
 	if (obj && obj->prop && obj->prop->type == PROPTYPE_DOOR) {
 		struct doorobj *door = (struct doorobj *) obj;
 		u8 bits = cmd[3];
-		door->keyflags = door->keyflags | bits;
+		door->keyflags = modAreMissionDoorsUnlocked() ? 0 : door->keyflags | bits;
 	}
 
 	g_Vars.aioffset += 4;
@@ -4100,6 +4122,12 @@ bool aiSpawnChrAtPad(void)
 
 	if (spawnflags);
 
+	if (modRandomIsOn()) {
+		// Perfect Random owns guard spawns for the entire mission.
+		g_Vars.aioffset += 13;
+		return false;
+	}
+
 	if (chrSpawnAtPad(g_Vars.chrdata, cmd->b2, (s8)cmd->b3, pad, ailist, spawnflags)) {
 		g_Vars.aioffset = chraiGoToLabel(g_Vars.ailist, g_Vars.aioffset, cmd->b12);
 	} else {
@@ -4118,6 +4146,11 @@ bool aiSpawnChrAtChr(void)
 	u32 spawnflags = (cmd[8] << 16) | (cmd[9] << 8) | cmd[10] | (cmd[7] << 24);
 	u16 ailistid = cmd[6] | (cmd[5] << 8);
 	u8 *ailist = ailistFindById(ailistid);
+
+	if (modRandomIsOn()) {
+		g_Vars.aioffset += 12;
+		return false;
+	}
 
 	if (chrSpawnAtChr(g_Vars.chrdata, cmd[2], (s8)cmd[3], cmd[4], ailist, spawnflags)) {
 		g_Vars.aioffset = chraiGoToLabel(g_Vars.ailist, g_Vars.aioffset, cmd[11]);
@@ -4279,7 +4312,9 @@ bool aiDuplicateChr(void)
 	struct weaponobj *cloneweapon0 = NULL;
 	struct prop *cloneweapon1prop = NULL;
 
-	if (chr && (chr->chrflags & CHRCFLAG_CLONEABLE)) {
+	if (chr && (chr->chrflags & CHRCFLAG_CLONEABLE)
+			&& !modRandomIsOn()
+			) {
 		cloneprop = chrSpawnAtChr(g_Vars.chrdata, chr->bodynum, -1, chr->chrnum, ailist, spawnflags);
 
 		if (cloneprop) {
@@ -4442,6 +4477,12 @@ bool aiSpeak(void)
 	u32 channelnum;
 	char *text = text_id >= 0 ? langGet(cmd[4] | (cmd[3] << 8)) : NULL;
 
+	// The intro cutscene a Random mission skips: no dialogue for it either
+	if (modRandomCutsceneMuted()) {
+		g_Vars.aioffset += 9;
+		return false;
+	}
+
 	if (chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER) {
 		playernum = playermgrGetPlayerNumByProp(chr->prop);
 	}
@@ -4477,6 +4518,20 @@ bool aiPlaySound(void)
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 	s16 audio_id = cmd[3] | (cmd[2] << 8);
 
+	if (modRandomCutsceneMuted()) {
+		g_Vars.aioffset += 5;
+		return false;
+	}
+
+#ifndef PLATFORM_N64
+	// a converted GoldenEye list names GoldenEye's sound, and one its bank has
+	// not got is silent rather than Perfect Dark's sound of that number
+	if (geSfxStage()) {
+		audio_id = geSfxNum(audio_id);
+	}
+
+	if (audio_id || !geSfxStage())
+#endif
 	psPlayFromProp((s8)cmd[4], audio_id, 0, NULL, PSTYPE_NONE, 0);
 
 	g_Vars.aioffset += 5;
@@ -4826,15 +4881,38 @@ bool aiNoOp00db(void)
  */
 bool aiEndLevel(void)
 {
-	if (debugAllowEndLevel()) {
+	// A Randomizer run ends at a death or leaves by a door, never at the end
+	// of the map it is passing through (the Duel ends when its last opponent
+	// falls). The same rule playerTick() keeps for a death in a run.
+	if (debugAllowEndLevel()
+#ifndef PLATFORM_N64
+			&& !modRandomIsOn()
+			&& !modRunIsOn()
+#endif
+			) {
 		if (g_IsTitleDemo) {
 			mainChangeToStage(STAGE_TITLE);
+#ifndef PLATFORM_N64
+		} else if (gecinemaEndingOver()) {
+			// an ending GE Plus's Cinema page is playing: back to the page
+#endif
 		} else if (g_Vars.autocutplaying) {
 			g_Vars.autocutfinished = true;
 		} else {
 			func0000e990();
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// A stock mission can revoke control and leave the player in its ending
+	// cutscene immediately before this command. Perfect Random keeps the
+	// generated mission running, so restore the normal walk/activation state
+	// when the stock end command is deliberately ignored.
+	if (modRandomIsOn()
+			&& (g_Vars.in_cutscene || g_Vars.tickmode == TICKMODE_CUTSCENE)) {
+		playerEndCutscene();
+	}
+#endif
 
 	g_Vars.aioffset += 2;
 
@@ -4847,6 +4925,7 @@ bool aiEndLevel(void)
 bool ai00dd(void)
 {
 	playerEndCutscene();
+	modRandomUnmuteCutscene();
 	g_Vars.aioffset += 2;
 	return false;
 }
@@ -4858,7 +4937,9 @@ bool aiWarpJoToPad(void)
 {
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 	u16 pad_id = cmd[3] | (cmd[2] << 8);
-	playerPrepareWarpType1(pad_id);
+	if (!modRandomIsOn() && !modSpawnEditIsOn()) {
+		playerPrepareWarpType1(pad_id);
+	}
 
 	g_Vars.aioffset += 4;
 
@@ -4881,6 +4962,16 @@ bool aiSetCameraAnimation(void)
 {
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 	s16 anim_id = cmd[3] | (cmd[2] << 8);
+
+	if (modRandomIsOn() || modSpawnEditIsOn()) {
+		// Let the script take its skip branch without starting a camera.
+		if (g_Vars.tickmode == TICKMODE_CUTSCENE) {
+			playerEndCutscene();
+		}
+		modRandomMuteCutscene();
+		g_Vars.aioffset += 4;
+		return false;
+	}
 
 	playerStartCutscene(anim_id);
 
@@ -4917,7 +5008,7 @@ bool aiIfCutsceneButtonPressed(void)
 {
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 
-	if ((g_Vars.in_cutscene && g_CutsceneSkipRequested) ||
+	if (modRandomCutsceneMuted() || (g_Vars.in_cutscene && g_CutsceneSkipRequested) ||
 			(g_Vars.stagenum == STAGE_CITRAINING && var80087260 > 0)) {
 		g_Vars.aioffset = chraiGoToLabel(g_Vars.ailist, g_Vars.aioffset, cmd[2]);
 	} else {
@@ -4933,7 +5024,9 @@ bool aiIfCutsceneButtonPressed(void)
 bool ai0175(void)
 {
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
-	playerReorientForCutsceneStop(cmd[2]);
+	if (!modRandomIsOn() && !modSpawnEditIsOn()) {
+		playerReorientForCutsceneStop(cmd[2]);
+	}
 	g_Vars.aioffset += 3;
 
 	return false;
@@ -5116,12 +5209,24 @@ bool ai00df(void)
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 	struct tag *tag = tagFindById(cmd[2]);
 
-	if (tag) {
+#ifndef PLATFORM_N64
+	// GoldenEye's CameraSwitch: the ending's Bond is the player's own body,
+	// which is not drawn while it drives the tank
+	if (modloaderStageIsMission(g_Vars.stagenum) && !modRandomIsOn() && !modSpawnEditIsOn()) {
+		geTankLeaveForCutscene();
+	}
+#endif
+
+	if (tag && !modRandomIsOn() && !modSpawnEditIsOn()) {
 		s32 cmdindex = setupGetCmdIndexByTag(tag);
 
 		if (cmdindex >= 0) {
 			struct warpparams *params = (struct warpparams *) setupGetCmdByIndex(cmdindex + tag->cmdoffset);
 			playerPrepareWarpType2(params, cmd[4] | (cmd[3] << 8), cmd[6] | (cmd[5] << 8));
+#ifndef PLATFORM_N64
+			// netplay: a co-op client takes the same shot (netcoop.c)
+			if (g_NetMode == NETMODE_SERVER && params) netCoopHostCameraSwitch(cmdindex + tag->cmdoffset, params);
+#endif
 		}
 	}
 
@@ -5138,7 +5243,20 @@ bool aiRevokeControl(void)
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 	struct chrdata *chr = chrFindById(g_Vars.chrdata, cmd[2]);
 
-	if (chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER) {
+	// A Randomizer run keeps the player's control whatever the stage's script
+	// asks. A mission takes it away for its ending - G5 Building's exit
+	// catwalk, Chicago, Villa, Rescue, Escape, the Duel - and gives it back
+	// only by ending the level, which a run never lets a script do
+	// (aiEndLevel()): the player was left frozen in the doorway with the
+	// guards still shooting until a menu opened and closed (F3 20260928-034505).
+	// A forced walk does not need it taken - the autowalk tick mode drives the
+	// player on its own - and the run skips a cutscene the moment it may.
+	if (chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER
+#ifndef PLATFORM_N64
+			&& !modRandomIsOn()
+			&& !modRunIsOn()
+#endif
+			) {
 		u32 prevplayernum = g_Vars.currentplayernum;
 		u32 playernum = playermgrGetPlayerNumByProp(chr->prop);
 		setCurrentPlayerNum(playernum);
@@ -5155,6 +5273,9 @@ bool aiRevokeControl(void)
 
 		g_PlayersWithControl[g_Vars.currentplayernum] = false;
 		setCurrentPlayerNum(prevplayernum);
+#ifndef PLATFORM_N64
+		gecinemaSetMissionTimerHeld(true);
+#endif
 	}
 
 	g_Vars.aioffset += 4;
@@ -5419,8 +5540,19 @@ bool aiChrDrawWeapon(void)
 		u32 prevplayernum = g_Vars.currentplayernum;
 		u32 playernum = playermgrGetPlayerNumByProp(chr->prop);
 		setCurrentPlayerNum(playernum);
-		bgunEquipWeapon2(0, (s8)cmd[3]);
-		bgunEquipWeapon2(1, 0);
+#ifndef PLATFORM_N64
+		// This is how a mission arms the player a few frames in (the Villa
+		// draws the sniper rifle). A Perfect Random mission keeps the gun it
+		// dealt instead.
+		if (modRandomGetStartingWeapon() > WEAPON_NONE) {
+			bgunEquipWeapon2(HAND_LEFT, WEAPON_NONE);
+			bgunEquipWeapon2(HAND_RIGHT, modRandomGetStartingWeapon());
+		} else
+#endif
+		{
+			bgunEquipWeapon2(0, (s8)cmd[3]);
+			bgunEquipWeapon2(1, 0);
+		}
 		setCurrentPlayerNum(prevplayernum);
 	}
 
@@ -5437,7 +5569,7 @@ bool aiChrDrawWeaponInCutscene(void)
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 	struct chrdata *chr = chrFindById(g_Vars.chrdata, cmd[2]);
 
-	if (chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER) {
+	if (chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER && !modRandomCutsceneMuted()) {
 		u32 prevplayernum = g_Vars.currentplayernum;
 		u32 playernum = playermgrGetPlayerNumByProp(chr->prop);
 		setCurrentPlayerNum(playernum);
@@ -5540,7 +5672,9 @@ bool ai00f4(void)
 	s16 height2 = cmd[11] | (cmd[10] << 8);
 	s32 posangle = cmd[13] | (cmd[12] << 8);
 
-	playerPrepareWarpType3(posangle * M_BADTAU / 65536, rotangle * M_BADTAU / 65536, range, height1, height2, padnum);
+	if (!modRandomIsOn() && !modSpawnEditIsOn()) {
+		playerPrepareWarpType3(posangle * M_BADTAU / 65536, rotangle * M_BADTAU / 65536, range, height1, height2, padnum);
+	}
 
 	g_Vars.aioffset += 14;
 
@@ -5581,7 +5715,13 @@ bool aiIfAllObjectivesComplete(void)
 {
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 
-	if (objectiveIsAllComplete()) {
+	// A Randomizer run's room has one objective, the run's, and the stage's
+	// script reading it as the mission's own finished the mission on it.
+	if (objectiveIsAllComplete()
+#ifndef PLATFORM_N64
+			&& !modRunIsOn()
+#endif
+			) {
 		g_Vars.aioffset = chraiGoToLabel(g_Vars.ailist, g_Vars.aioffset, cmd[2]);
 	} else {
 		g_Vars.aioffset = g_Vars.aioffset + 3;
@@ -5677,7 +5817,9 @@ bool aiPlayDefaultTracks(void)
 bool aiPlayCutsceneTrack(void)
 {
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
-	musicStartCutscene(cmd[2]);
+	if (!modRandomCutsceneMuted()) {
+		musicStartCutscene(cmd[2]);
+	}
 	g_Vars.aioffset += 3;
 
 	return false;
@@ -6401,6 +6543,8 @@ bool aiDetectEnemy(void)
 		g_Vars.aioffset = g_Vars.aioffset + 4;
 		return false;
 	}
+	const bool objectiveNpcScan = g_Vars.ailist == ailistFindById(GAILIST_ROGUE_OBJECTIVE_WAIT)
+		|| g_Vars.ailist == ailistFindById(GAILIST_ROGUE_OBJECTIVE_PURSUE);
 
 	/**
 	 * Iterate all the chrs in team order. Generally the outer loop iterates the
@@ -6415,10 +6559,13 @@ bool aiDetectEnemy(void)
 	do {
 		u8 teamvalue = (1 << team);
 
-		while (*chrnums != -2 && g_Vars.chrdata->team != teamvalue) {
+		// The invasion and other factions can share a team bucket.
+		while (*chrnums != -2 && (g_Vars.chrdata->team != teamvalue
+				|| teamvalue == MODEVENT_TEAM_MAIAN)) {
 			struct chrdata *chr = chrFindByLiteralId(*chrnums);
 
 			if (chr && chr->prop
+					&& (!objectiveNpcScan || chr->prop->type == PROPTYPE_CHR)
 					&& !chrIsDead(chr)
 					&& chr->actiontype != ACT_DEAD
 					&& chr->actiontype != ACT_DIE
@@ -6899,6 +7046,27 @@ bool aiSayQuip(void)
 	u8 headshotted = 0;
 #endif
 	struct chrdata *loopchr;
+
+#ifdef PD_PHYSICS
+	if (cmd[7] == 0 && (row || cmd[4] || cmd[6])
+			&& guardVoiceTryQuip(g_Vars.chrdata, row, cmd[4], cmd[5])) {
+		g_Vars.aioffset += 10;
+		return false;
+	}
+#endif
+
+#ifndef PLATFORM_N64
+	// GoldenEye's guards have no lines to say: its lists have no quip command,
+	// and a converted level's guard only reaches one through Perfect Dark's
+	// own lists - the psychosis gun's (GAILIST_PSYCHOSISED and the combat it
+	// hands over to) - where he spoke Perfect Dark's guards' lines
+	// (F3 20261010-171555). GoldenEye's and its ROM hacks' levels, arenas and
+	// missions alike; never Perfect Dark's own nor a PD mod's.
+	if (modloaderDirIndexIsConversion(modloaderGetStageModDirIndex(g_Vars.stagenum))) {
+		g_Vars.aioffset += 10;
+		return false;
+	}
+#endif
 
 	// Choose bank
 	if (CHRRACE(g_Vars.chrdata) == RACE_SKEDAR) {
@@ -8209,7 +8377,13 @@ bool aiPlayerAutoWalk(void)
 	s16 pad_id = cmd[4] | (cmd[3] << 8);
 	struct chrdata *chr = chrFindById(g_Vars.chrdata, cmd[2]);
 
-	if (chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER) {
+	// Scripted walks belong to the story sequences and can pull the player
+	// away from the generated start or through a stock exit.
+	if (chr && chr->prop && chr->prop->type == PROPTYPE_PLAYER
+#ifndef PLATFORM_N64
+			&& !modRandomIsOn() && !modSpawnEditIsOn()
+#endif
+			) {
 		u32 prevplayernum = g_Vars.currentplayernum;
 		u32 playernum = playermgrGetPlayerNumByProp(chr->prop);
 		setCurrentPlayerNum(playernum);
@@ -9402,12 +9576,35 @@ bool aiChrSetCutsceneWeapon(void)
 {
 	u8 *cmd = g_Vars.ailist + g_Vars.aioffset;
 	struct chrdata *chr = chrFindById(g_Vars.chrdata, cmd[2]);
-	s32 model_id = playermgrGetModelOfWeapon(cmd[3]);
-	s32 fallback_model_id = playermgrGetModelOfWeapon(cmd[4]);
+	s32 weaponnum = cmd[3];
+	s32 fallbackweapon = cmd[4];
+	s32 model_id;
+	s32 fallback_model_id;
+
+	if (modRandomCutsceneMuted()) {
+		g_Vars.aioffset += 5;
+		return false;
+	}
+
+	if (gexPlusGetPdGuns() && modloaderStageIsMission(g_Vars.stagenum)) {
+		s32 equivalent = weaponnum == 0xff ? WEAPON_NONE : gegunsPdEquivalent(weaponnum);
+		s32 fallbackequivalent = fallbackweapon == 0xff ? WEAPON_NONE : gegunsPdEquivalent(fallbackweapon);
+
+		if (equivalent != WEAPON_NONE) {
+			weaponnum = equivalent;
+		}
+
+		if (fallbackequivalent != WEAPON_NONE) {
+			fallbackweapon = fallbackequivalent;
+		}
+	}
+
+	model_id = playermgrGetModelOfWeapon(weaponnum);
+	fallback_model_id = playermgrGetModelOfWeapon(fallbackweapon);
 
 	if (chr) {
-		if (cmd[3] == 0xff) {
-			if (cmd[4] == 0xff) {
+		if (weaponnum == 0xff) {
+			if (fallbackweapon == 0xff) {
 				if (chr->weapons_held[0]) {
 					struct weaponobj *weapon = chr->weapons_held[0]->weapon;
 					bool valid = true;
@@ -9432,7 +9629,7 @@ bool aiChrSetCutsceneWeapon(void)
 				}
 			} else {
 				if (chr->weapons_held[0] == NULL && chr->weapons_held[1] == NULL && fallback_model_id >= 0) {
-					weaponCreateForChr(chr, fallback_model_id, cmd[4], 0, NULL, NULL);
+					weaponCreateForChr(chr, fallback_model_id, fallbackweapon, 0, NULL, NULL);
 				}
 			}
 		} else {
@@ -9440,11 +9637,11 @@ bool aiChrSetCutsceneWeapon(void)
 			weaponDeleteFromChr(chr, HAND_RIGHT);
 
 			if (model_id >= 0) {
-				weaponCreateForChr(chr, model_id, cmd[3], 0, NULL, NULL);
+				weaponCreateForChr(chr, model_id, weaponnum, 0, NULL, NULL);
 			}
 
 			if (fallback_model_id >= 0) {
-				weaponCreateForChr(chr, fallback_model_id, cmd[4], OBJFLAG_WEAPON_LEFTHANDED, NULL, NULL);
+				weaponCreateForChr(chr, fallback_model_id, fallbackweapon, OBJFLAG_WEAPON_LEFTHANDED, NULL, NULL);
 			}
 		}
 	}
@@ -9658,6 +9855,11 @@ bool aiShowCutsceneChrs(void)
 	bool show = cmd[2];
 	s32 i;
 
+	if (modRandomIsOn()) {
+		g_Vars.aioffset += 3;
+		return false;
+	}
+
 	if (show) {
 		for (i = chrsGetNumSlots() - 1; i >= 0; i--) {
 			if (g_ChrSlots[i].chrnum >= 0 && g_ChrSlots[i].prop && (g_ChrSlots[i].hidden2 & CHRH2FLAG_HIDDENFORCUTSCENE)) {
@@ -9667,6 +9869,27 @@ bool aiShowCutsceneChrs(void)
 		}
 	} else {
 		for (i = chrsGetNumSlots() - 1; i >= 0; i--) {
+#ifndef PLATFORM_N64
+			// A GoldenEye remake mission, where this is GoldenEye's HideAllChrs
+			// and the first command of nearly every ending. GoldenEye has no
+			// chr for Bond when it runs - his body is loaded by the
+			// CameraSwitch after it - so the body the ending is about is never
+			// hidden. Perfect Dark's player has a chr at all times, which this
+			// hid with the guards: a hidden chr is not ticked, so the list the
+			// ending hands Bond (SetBondsAiList - Dam's jump, Archives' run)
+			// never ran a command, and nobody was in the shot.
+			//
+			// After the CameraSwitch (the player's warp to the ending's camera,
+			// TICKMODE_WARP) Bond's body is one of GoldenEye's chrs, and its
+			// HideAllChrs hides him with the rest: Runway switches the camera
+			// first and hides everyone, and Bond is in the plane taking off,
+			// not standing on the runway where it was (F3 20261006-024303).
+			if (g_ChrSlots[i].prop && g_ChrSlots[i].prop->type == PROPTYPE_PLAYER
+					&& modloaderStageIsMission(g_Vars.stagenum)
+					&& g_Vars.tickmode != TICKMODE_WARP) {
+				continue;
+			}
+#endif
 			if (g_ChrSlots[i].chrnum >= 0 && g_ChrSlots[i].prop &&
 					(g_ChrSlots[i].chrflags & (CHRCFLAG_UNPLAYABLE | CHRCFLAG_HIDDEN)) == 0) {
 				g_ChrSlots[i].hidden2 |= CHRH2FLAG_HIDDENFORCUTSCENE;
@@ -9805,7 +10028,9 @@ bool aiPlaySoundFromProp(void)
 	s16 type = cmd[8];
 	struct defaultobj *obj = objFindByTagId(cmd[3]);
 
-	psPlayFromProp(channel, audio_id, volume, obj->prop, type, flags);
+	if (!modRandomCutsceneMuted()) {
+		psPlayFromProp(channel, audio_id, volume, obj->prop, type, flags);
+	}
 
 	g_Vars.aioffset += 11;
 
@@ -9833,6 +10058,9 @@ bool aiChrKill(void)
 	struct chrdata *chr = chrFindById(g_Vars.chrdata, cmd[2]);
 
 	if (chr) {
+#ifndef PLATFORM_N64
+		chrRecordDeathOrder(chr);
+#endif
 		chr->actiontype = ACT_DEAD;
 		chr->act_dead.fadetimer60 = -1;
 		chr->act_dead.fadenow = false;
@@ -9934,4 +10162,5 @@ bool ai01b4(void)
 
 	return false;
 }
+
 #endif

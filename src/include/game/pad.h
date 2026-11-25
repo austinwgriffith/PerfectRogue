@@ -20,4 +20,5 @@ void coverUnsetFlag(s32 covernum, u32 flag);
 void coverSetOutOfSight(s32 covernum, bool enable);
 bool coverIsSpecial(struct cover *cover);
 
+void padSetPosY(s32 padnum, f32 y);
 #endif

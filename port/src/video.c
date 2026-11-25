@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <SDL.h>
 #include <PR/ultratypes.h>
 #include <PR/gbi.h>
 #include "platform.h"
@@ -12,6 +13,8 @@
 #include "../fast3d/gfx_api.h"
 #include "../fast3d/gfx_sdl.h"
 #include "../fast3d/gfx_opengl.h"
+#undef bool // Game headers use the original 32-bit bool.
+#include "game/modrandom.h"
 
 #ifdef PLATFORM_NSWITCH
 #define DEFAULT_VID_WIDTH 1280
@@ -29,6 +32,7 @@ static struct GfxWindowManagerAPI *wmAPI;
 static struct GfxRenderingAPI *renderingAPI;
 
 static bool initDone = false;
+static Gfx *overlayCommands;
 
 static s32 vidWidth = DEFAULT_VID_WIDTH;
 static s32 vidHeight = DEFAULT_VID_HEIGHT;
@@ -115,6 +119,7 @@ s32 videoInit(void)
 
 void videoStartFrame(void)
 {
+	overlayCommands = NULL;
 	if (initDone) {
 		startTime = wmAPI->get_time();
 		gfx_start_frame();
@@ -125,10 +130,17 @@ void videoStartFrame(void)
 	vidMaximize = videoGetMaximizeWindow();
 }
 
+void videoQueueOverlay(Gfx *cmds)
+{
+	overlayCommands = cmds;
+}
+
 void videoSubmitCommands(Gfx *cmds)
 {
 	if (initDone) {
-		gfx_run(cmds);
+		const bool presented = gfx_run(cmds, overlayCommands);
+		modRandomEventAnnouncementFramePresented(presented, overlayCommands != NULL);
+		overlayCommands = NULL;
 		++dlcount;
 	}
 }
@@ -179,6 +191,12 @@ void *videoGetWindowHandle(void)
 		return wmAPI->get_window_handle();
 	}
 	return NULL;
+}
+
+s32 videoIsWindowVisible(void)
+{
+	SDL_Window *window = videoGetWindowHandle();
+	return window && !(SDL_GetWindowFlags(window) & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED));
 }
 
 void videoUpdateNativeResolution(s32 w, s32 h)

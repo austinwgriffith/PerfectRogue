@@ -1000,7 +1000,11 @@ void sndLoadSfxCtl(void)
 	// some memory but this is initialisation code so it's not much of an issue.
 	size = g_NumSounds * sizeof(uintptr_t) + 20;
 	size = ALIGN16(size);
+	#ifdef PLATFORM_N64
 	g_ALSoundRomOffsets = alHeapAlloc(&g_SndHeap, 1, size);
+#else
+	g_ALSoundRomOffsets = alHeapAlloc(&g_SndHeap, 1, ALIGN16(2048 * sizeof(uintptr_t) + 20));
+#endif
 	dmaExec(g_ALSoundRomOffsets, romaddr, size);
 
 	*(uintptr_t *)&g_ALSoundRomOffsets += 0x10;
@@ -1011,7 +1015,11 @@ void sndLoadSfxCtl(void)
 	}
 
 	// Allocate and initialise cache
+	#ifdef PLATFORM_N64
 	g_SndCache.indexes = alHeapAlloc(&g_SndHeap, sizeof(u16), g_NumSounds);
+#else
+	g_SndCache.indexes = alHeapAlloc(&g_SndHeap, sizeof(u16), 2048);
+#endif
 
 	for (i = 0; i < (u32)g_NumSounds; i++) {
 		g_SndCache.indexes[i] = -1;
@@ -1326,6 +1334,32 @@ void sndSetSoundMode(s32 mode)
 	}
 }
 
+#ifndef PLATFORM_N64
+s32 sndAppendSound(uintptr_t ctloffset)
+{
+	s32 id;
+
+	if (!g_ALSoundRomOffsets || g_NumSounds >= 2048) {
+		return 0;
+	}
+
+	id = g_NumSounds++;
+	g_ALSoundRomOffsets[id - 1] = ctloffset + sndGetCtlStart();
+	g_SndCache.indexes[id] = 0xffff;
+	return id;
+}
+
+uintptr_t sndGetCtlStart(void)
+{
+	return (uintptr_t)(romptr_t)REF_SEG _sfxctlSegmentRomStart;
+}
+
+uintptr_t sndGetTblStart(void)
+{
+	return (uintptr_t)(romptr_t)REF_SEG _sfxtblSegmentRomStart;
+}
+#endif
+
 ALSound *sndLoadSound(s16 soundnum)
 {
 	union soundnumhack tmp;
@@ -1435,6 +1469,9 @@ void seqInit(struct seqinstance *seq)
 	n_alCSPNew(seq->seqp, &config);
 
 	n_alCSPSetBank(seq->seqp, var80095204);
+#ifndef PLATFORM_N64
+	seq->bank = var80095204;
+#endif
 }
 
 void sndAddRef(ALSound *sound)
@@ -1634,6 +1671,51 @@ void snd0000fc40(s32 arg0)
 	// empty
 }
 
+#ifndef PLATFORM_N64
+/**
+ * MOD: sequences after the game's own, each with the instrument bank it was
+ * written for (GoldenEye's music, port/src/gemusic.c: its sequences only sound
+ * like themselves on its own instruments). Numbered from SEQ_EXTRA_BASE.
+ */
+struct seqextra {
+	const u8 *zip;
+	u16 binlen;
+	u16 ziplen;
+	s16 scale;
+	ALBank *bank;
+};
+
+#define SEQ_MAX_EXTRA 256
+#define SEQ_APPENDED_VOLUME 0x4ccc
+
+static struct seqextra g_SeqExtra[SEQ_MAX_EXTRA];
+static s32 g_NumSeqExtra;
+
+/** A sequence number for zip (rzip, ziplen bytes, binlen inflated) on bank; -1 when full or unloaded. */
+s32 seqAppend(const u8 *zip, u16 binlen, u16 ziplen, ALBank *bank)
+{
+	if (!g_SeqTable || g_NumSeqExtra >= SEQ_MAX_EXTRA || !zip || !bank) {
+		return -1;
+	}
+
+	g_SeqExtra[g_NumSeqExtra].zip = zip;
+	g_SeqExtra[g_NumSeqExtra].binlen = binlen;
+	g_SeqExtra[g_NumSeqExtra].ziplen = ziplen;
+	g_SeqExtra[g_NumSeqExtra].bank = bank;
+	g_SeqExtra[g_NumSeqExtra].scale = SEQ_APPENDED_VOLUME;
+
+	return SEQ_EXTRA_BASE + g_NumSeqExtra++;
+}
+
+/** How loud an appended sequence plays (var8005ecf8[] has no row for it). */
+void seqAppendSetScale(s32 tracknum, s16 scale)
+{
+	if (tracknum >= SEQ_EXTRA_BASE && tracknum - SEQ_EXTRA_BASE < g_NumSeqExtra && scale > 0) {
+		g_SeqExtra[tracknum - SEQ_EXTRA_BASE].scale = scale;
+	}
+}
+#endif
+
 bool seqPlay(struct seqinstance *seq, s32 tracknum)
 {
 	u32 stack;
@@ -1657,6 +1739,21 @@ bool seqPlay(struct seqinstance *seq, s32 tracknum)
 		return false;
 	}
 
+#ifndef PLATFORM_N64
+	const struct seqextra *extra = NULL;
+
+	if (seq->tracknum >= SEQ_EXTRA_BASE) {
+		if (seq->tracknum - SEQ_EXTRA_BASE >= g_NumSeqExtra) {
+			return false;
+		}
+
+		extra = &g_SeqExtra[seq->tracknum - SEQ_EXTRA_BASE];
+	} else if (seq->tracknum < 0 || !g_SeqTable || seq->tracknum >= g_SeqTable->count) {
+		return false;
+	}
+
+	if (!extra)
+#endif
 	if (g_SeqRomAddrs[seq->tracknum] < 0x10000) {
 		return false;
 	}
@@ -1664,8 +1761,18 @@ bool seqPlay(struct seqinstance *seq, s32 tracknum)
 #ifndef PLATFORM_N64
 	// try to load external replacement, which can be either compressed or not
 	u32 extlen = 0;
-	u8 *extseq = modSequenceLoad(seq->tracknum, &extlen);
-	if (extseq) {
+	u8 *extseq = extra ? NULL : modSequenceLoad(seq->tracknum, &extlen);
+	if (extra) {
+		binlen = ALIGN16(extra->binlen) + 0x40;
+		if (binlen >= g_SeqBufferSize) {
+			return false;
+		}
+		ziplen = ALIGN16(extra->ziplen);
+		binstart = seq->data;
+		zipstart = binstart + binlen - ziplen;
+		memcpy(zipstart, extra->zip, extra->ziplen);
+		ziplen = rzipInflate(zipstart, binstart, scratch);
+	} else if (extseq) {
 		if (extlen > 2 && rzipIs1173(extseq)) {
 			// sequence is compressed; uncompress
 			binlen = ((u32)extseq[2] << 16) | ((u32)extseq[3] << 8) | (u32)extseq[4];
@@ -1736,6 +1843,19 @@ bool seqPlay(struct seqinstance *seq, s32 tracknum)
 	seq->seqp->state = AL_STARTING;
 #endif
 
+#ifndef PLATFORM_N64
+	// the instruments the sequence was written for, only when they change, so
+	// the game's own music goes on exactly as it did
+	{
+		ALBank *bank = extra ? extra->bank : var80095204;
+
+		if (bank != seq->bank) {
+			n_alCSPSetBank(seq->seqp, bank);
+			seq->bank = bank;
+		}
+	}
+#endif
+
 	n_alCSeqNew(&seq->seq, seq->data);
 	n_alCSPSetSeq(seq->seqp, &seq->seq);
 	seqSetVolume(seq, seqGetVolume(seq));
@@ -1752,7 +1872,22 @@ u16 seqGetVolume(struct seqinstance *seq)
 void seqSetVolume(struct seqinstance *seq, u16 volume)
 {
 	if (!g_SndDisabled) {
-		u32 tmp = var8005ecf8[seq->tracknum] * volume;
+		u32 tmp;
+#ifndef PLATFORM_N64
+		// var8005ecf8[] has a scale for each of the ROM's own sequences and
+		// nothing past them: an appended one carries its own
+		s32 scale = SEQ_APPENDED_VOLUME;
+
+		if (seq->tracknum >= SEQ_EXTRA_BASE && seq->tracknum - SEQ_EXTRA_BASE < g_NumSeqExtra) {
+			scale = g_SeqExtra[seq->tracknum - SEQ_EXTRA_BASE].scale;
+		} else if (seq->tracknum >= 0 && seq->tracknum < ARRAYCOUNT(var8005ecf8)) {
+			scale = var8005ecf8[seq->tracknum];
+		}
+
+		tmp = scale * volume;
+#else
+		tmp = var8005ecf8[seq->tracknum] * volume;
+#endif
 		tmp >>=	15;
 
 		seq->volume = volume;

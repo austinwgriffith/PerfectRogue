@@ -32,6 +32,15 @@ Acmd *n_alAdpcmPull(N_PVoice *filter, s16 *outp, s32 outCount, Acmd *p)
 
 	inp = N_AL_DECODER_IN;
 
+#ifndef PLATFORM_N64
+	// MOD: a voice whose wave has no codebook (a sound the bank being played
+	// does not have, as GoldenEye's music bank can give a stock sequence) is
+	// silent; the mixer would copy from address 8 and take the game down
+	if (!f->dc_table || !f->dc_table->waveInfo.adpcmWave.book) {
+		return ptr;
+	}
+#endif
+
 	aLoadADPCM(ptr++, f->dc_bookSize, K0_TO_PHYS(f->dc_table->waveInfo.adpcmWave.book->book));
 
 	looped = (outCount + f->dc_sample > f->dc_loop.end) && (f->dc_loop.count != 0);

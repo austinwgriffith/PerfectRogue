@@ -66,6 +66,7 @@ f32 clipcheckWallFraction(const struct coord *from, const struct coord *to, f32 
 f32 clipcheckBodyFraction(const struct coord *from, const struct coord *to, f32 low, f32 top, f32 radius, f32 *outnx, f32 *outnz);
 // Any drawn surface between a and b (groupmask: 1 << CLIPCHECK_GROUP_*, 0 = all)
 s32 clipcheckSegment(const struct coord *a, const struct coord *b, u32 groupmask, struct coord *hit, struct coord *normal);
+s32 clipcheckArenaShotReady(void);
 
 // bondwalk.c: the player
 s32 clipcheckPlayerCdTypes(s32 types);

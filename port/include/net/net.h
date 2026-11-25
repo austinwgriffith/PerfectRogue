@@ -1,0 +1,575 @@
+#ifndef _IN_NET_NET_H
+#define _IN_NET_NET_H
+
+#include <stdio.h>
+
+#include <signal.h>
+#include <PR/ultratypes.h>
+
+/**
+ * Netplay's face to the game: the mode, the pass the main loop is on, and the
+ * one-line calls the hooks make (PLANS/NETPLAY.md, PLANS/netplay/spec-*.md).
+ *
+ * Game code includes this, so it must never pull in <stdbool.h> or ENet
+ * (bool-two-sizes): nothing here is a bool, everything is s32/u32. Every hook
+ * in the game is a call into port/src/net/ behind g_NetMode != NETMODE_NONE
+ * or g_NetPass != NETPASS_NONE, so with netplay off (the default) the game
+ * runs exactly as it did.
+ */
+
+#define NETMODE_NONE   0 // offline: every hook is skipped
+#define NETMODE_SERVER 1 // the authority: a listen host, --dedicated, or --net-clock-test
+#define NETMODE_CLIENT 2
+
+/**
+ * What the current mainTick() pass is (mainNetFrame in pdmain.c). A tick
+ * pass is exactly a stock frame of diff (1, 4); a present-only pass is a
+ * paused frame of diff (0, 0) that consumes no input.
+ */
+#define NETPASS_NONE         0 // the stock loop
+#define NETPASS_PRESENT_ONLY 1 // no tick due: draw, consume nothing
+#define NETPASS_TICK         2 // a sim tick whose display list is dropped
+#define NETPASS_TICK_PRESENT 3 // the frame's last tick, which is drawn
+
+extern s32 g_NetMode;
+extern s32 g_NetPass;
+extern s32 g_NetTicksThisFrame;   // tick passes in this presented frame (audio, frame history)
+extern s32 g_NetDedicated;        // --dedicated: no window, no audio, no local input
+extern u32 g_NetTick;             // sim passes since the stage started (never lvframenum)
+extern s32 g_NetLocalSlot;        // this machine's player: 0 on a listen host, k on a client, -1 dedicated
+extern s32 g_NetInStageLoop;      // mainLoop is running mainNetFrame (the pad read moved into the ticks)
+extern volatile sig_atomic_t g_NetQuit; // a signal asked a dedicated server to stop
+extern s32 g_NetHostRenderAtTickRate; // Net.HostRenderAtTickRate: the host never runs present-only passes
+extern s32 g_NetClockTest;        // --net-clock-test N: offline, N tick passes per presented frame
+
+static inline s32 netIsLocalSlot(s32 playernum)
+{
+	return g_NetMode == NETMODE_NONE || playernum == g_NetLocalSlot;
+}
+
+s32 netSlotHasMouse(s32 playernum);
+
+// joy.c's NUM_PADS (MAX_PLAYERS): a virtual pad per player slot (asserted in joy.c)
+#define NET_NUM_PADS 12
+
+// Whether this player's mouse drives it (bondmove.c, player.c, bondeyespy.c):
+// the local player's here, a remote player's from its commands on the host
+#define NET_MOUSE_SLOT(pn) (g_NetMode == NETMODE_NONE ? (pn) == 0 : netSlotHasMouse(pn))
+
+// Whether this player's menus take this machine's mouse, ESC and shoulder
+// keys (menu.c): player 0 offline, the local player in a net game
+#define NET_LOCAL_UI(pn) (g_NetMode == NETMODE_NONE ? (pn) == 0 : netIsLocalSlot(pn))
+
+/**
+ * Remote players (PLANS/netplay/spec-players.md). A pad index is a player's
+ * mpindex (its contpad1); a slot or playernum is g_Vars.players' index.
+ */
+
+// Hook V (libultra.c osContGetReadData): the four pads for a sample during a
+// net match: the local player's from this machine, every other neutral (a
+// remote player's are written per tick by netTickReadPad). `pads` is
+// OSContPad[4]. 0 outside a net match: the stock read then runs.
+s32 netContGetReadData(void *pads);
+// Hook V2 (libultra.c osContGetQuery): every human's pad is connected in a match
+s32 netVpadConnected(s32 idx);
+// Rumble only for this machine's own player (libultra.c __osMotorAccess)
+s32 netIsLocalPad(s32 idx);
+// menu.c's shoulder keys: 0 for this machine's player, -1 for any other
+s32 netLocalUiIndex(s32 playernum);
+
+// A player's mouse for the tick: the live one for the local player, the
+// command's for a remote one on the host (bondmove.c, player.c,
+// bondeyespy.c, activemenutick.c)
+void netMouseDelta(s32 playernum, f32 *dx, f32 *dy);
+void netMouseAbsDelta(s32 playernum, f32 *dx, f32 *dy);
+s32 netMouseLocked(s32 playernum);
+// bmoveTick on the host: a client's player walks by its commands alone - a
+// tick whose command has not come waits (1: no walk now), commands folded
+// into the tick walk first, each as the client walked it (netplayers.c)
+s32 netPlayersHostWalk(s32 allowc1x, s32 allowc1y, s32 allowc1buttons, s32 ignorec2);
+// ... and the walk of a tick that waits: as on a frame drawn between ticks, put back after (netpredict.c)
+void netPredictWalkHold(s32 begin);
+
+// player0f0bd358: the aspect of the screen this player is seen on
+f32 netSlotAspect(s32 playernum);
+// a player's own value of an integer NETKEY_PLAYER setting (modoptions.c's
+// getters, by the setting's variable): on the host a remote player's from
+// its SLOTCFG, else `mine`, this machine's (protocol 20)
+s32 netSlotOwnS32(s32 playernum, const s32 *var, s32 mine);
+// The host: buttons a client's player pressed this tick, as its command
+// carried them (START too); 0 for anyone else's (GoldenEye's exit, gexplus.c)
+u32 netPlayersHostPressed(s32 playernum, u32 mask);
+
+// The player whose ears and eyes this machine has (propsnd.c), or fallback
+struct player;
+struct player *netLocalPlayer(struct player *fallback);
+
+/**
+ * Prediction (PLANS/NETPLAY.md "Prediction", netpredict.c). A client runs
+ * its own player on its own commands at once; when the host's state for a
+ * command it played differs from what this machine had after the same
+ * command, the host's state is taken and the commands since are played
+ * again through bmoveTick. g_NetReplaying is set for that replay: anything
+ * other than the player's movement that the walk would do (a sound, a door,
+ * a death, the gun, a push) is not done again. Each such place returns at
+ * its top on it.
+ */
+extern s32 g_NetReplaying;
+// bmoveTick, at its head: a tick's movement starts (the client's own player)
+void netPredictMoveBegin(s32 allowc1x, s32 allowc1y, s32 allowc1buttons, s32 ignorec2);
+// playerTick, around bmoveTick on a frame drawn between ticks (g_NetPass
+// NETPASS_PRESENT_ONLY): the walk's state as the last tick left it, whatever
+// the input handling of a zero-length frame did to it (each machine draws
+// its own number of such frames, so nothing they do may stick)
+void netPredictPresentBegin(void);
+void netPredictPresentEnd(void);
+// bwalkTryJump, at its head: the tick's jump (pressed after its walk), for a replay
+void netPredictJumpTry(void);
+// playerTick's camera (player.c): the eye eased off a correction, and the
+// mouse not yet ticked turned in on a frame drawn between ticks
+struct coord;
+void netPredictView(struct coord *eye, struct coord *up, struct coord *look);
+
+/**
+ * Set around code that belongs to the player of the current pass (its gun,
+ * its HUD, its own life) when that player is not this machine's: sndStart
+ * then plays nothing, as nobody here is that player (spec-players.md §6).
+ * World sounds started from the same pass still play: positional ones
+ * lift the flag with netWorldSoundBegin/End.
+ */
+extern s32 g_NetRemotePass;
+// The pass's player while it is another machine's (-1 otherwise): what its
+// code makes there (its shot, the shot's sparks and flames) that machine
+// made itself, so the events leave it out (netevents.c)
+extern s32 g_NetPassPlayer;
+void netRemotePassBegin(void);
+// The data a player's look decides at a stage's load, as a net match plays it
+// on every machine: the host's at the match start, carried in RULES (protocol
+// 15). Each machine draws its own look over it. Returns 0 offline (and before
+// a client has its first RULES), when the look of this machine decides.
+#define NETLOOK_GECE      0x01 // GoldenEye's Community Edition copies (geRoomCeData())
+#define NETLOOK_XBLATILES 0x02 // the PD release's collision fixes (xblaStageLoadTiles())
+#define NETLOOK_MESHES    0x04 // the release's meshes: the male guards' heads dealt (bodyreset.c)
+s32 netLookData(u32 *bits);
+// The cheats a net match plays by: the host's enabled cheats on every machine
+// (protocol 28, in RULES), so a client's own (Unlimited Ammo, All Guns...)
+// never makes its player's guns and ammo disagree with the host's. Returns 0
+// offline and on the host (its own are the match's), the banks untouched.
+s32 netCheatsEnabled(u32 *bank0, u32 *bank1);
+// A client: guns its own menu put in its player's hands (PD's pause
+// inventory, GoldenEye's watch), and a device it switched there, for the
+// host to do the same with the next command (protocol 15); nothing offline
+// or on the host
+void netPlayersClientEquip(s32 right, s32 left);
+void netPlayersClientDevice(s32 weaponnum, s32 on);
+void netPlayersClientOrder(s32 sim, s32 command, s32 target); // Team Control's order (protocol 31): mpchr indexes, -1 all sims / no target
+static inline void netRemotePassEnd(void)
+{
+	g_NetRemotePass = 0;
+	g_NetPassPlayer = -1;
+}
+
+// Phase 8: obj->hidden's top nibble holds an owner mpchr index (ROM: thrown
+// and placed weapons, an object's last attacker, the HTM terminal's
+// activator), which wraps once a room has 16 or more chrs (12 humans and
+// sims). Every writer notes the full index in a side table (netents.c);
+// OBJ_OWNER reads it back when its low bits still match the nibble, else
+// the nibble. Offline it is the nibble, as before.
+struct defaultobj;
+s32 netObjOwnerGet(const struct defaultobj *obj);
+void netObjOwnerNote(const struct defaultobj *obj, s32 owner);
+#define OBJ_OWNER(obj) (g_NetMode != NETMODE_NONE ? netObjOwnerGet(obj) : (s32)(((obj)->hidden & 0xf0000000) >> 28))
+#define NET_OBJ_OWNER(obj, owner) do { if (g_NetMode != NETMODE_NONE) netObjOwnerNote((obj), (owner)); } while (0)
+
+#define NET_REMOTE_PASS_BEGIN() do { if (g_NetMode != NETMODE_NONE) netRemotePassBegin(); } while (0)
+#define NET_REMOTE_PASS_END()   do { if (g_NetMode != NETMODE_NONE) netRemotePassEnd(); } while (0)
+
+// Around a positional sound (psCreate, a shot's hit sounds in bondgun.c),
+// which the local listener hears wherever it was started from: the remote
+// pass's silence is lifted and put back after
+static inline s32 netWorldSoundBegin(void)
+{
+	const s32 pass = g_NetRemotePass;
+
+	if (g_NetMode != NETMODE_NONE && !g_NetReplaying) g_NetRemotePass = 0;
+	return pass;
+}
+
+static inline void netWorldSoundEnd(s32 pass)
+{
+	if (g_NetMode != NETMODE_NONE) g_NetRemotePass = pass;
+}
+
+// Set by bmoveTick around a player's own movement on an online co-op mission:
+// the other players are no obstacle to it (prop.c propIsOfCdType), the same on
+// the host and in a client's prediction. Hits are not collision: shots still
+// land on them. 0 offline, and in a Combat Simulator match.
+extern s32 g_NetPlayersPassThrough;
+
+// The players' own settings for the match (data.h PLAYER_EXTCFG()):
+// g_NetExtCfg is on from the match's start to its end (H1/H3 .. H12)
+extern s32 g_NetExtCfgOn;
+
+// How many views share the screen: one per machine in a net game, whatever
+// the player count (layout branches only; loops and counts keep PLAYERCOUNT())
+#define VIEWCOUNT() (g_NetMode != NETMODE_NONE ? 1 : PLAYERCOUNT())
+
+// Boot: reads --dedicated and --net-clock-test (main.c, before videoInit)
+void netInitArgs(void);
+
+// Main loop (pdmain.c)
+s32 netSessionInStage(void);
+s32 netStageReady(void);
+// F3 (nettrace.c): the ticks a frame ran (pdmain.c), and the trace's [netplay] section (trace.c)
+void netTraceNoteFrame(s32 ticks);
+void netTraceWrite(FILE *f);
+s32 netClockPpm(void);
+void netPump(void);
+void netFlush(void);
+void netWait(s32 us);
+void netStageStart(void);
+void netSessionModSwapped(void); // modmode.c: the host's PD mod was just entered at a STAGE_LOAD's stage change (protocol 25)
+// The Game Lobby (netlobbymenu.c): a client's fetch of the host's content under way, its progress in out; 0 none
+s32 netContentFetchLine(char *out, s32 size);
+// and its Mods window: what the room plays with, and where this machine stands with each
+#define NETCONTENTROW_HERE    0 // installed, converted or served already
+#define NETCONTENTROW_BUSY    1 // on its way: downloading, or (the host) sending
+#define NETCONTENTROW_MISSING 2 // not here: the host sends it at the launch
+struct netcontentrow {
+	char dir[128]; // NET_MAXMAPDIR + 1 (netproto.h)
+	char name[64];
+	char state[32];
+	s32 kind; // NETCONTENTROW_*
+};
+s32 netContentLobbyRows(const char *mod, const char *ge, const char *stagekey, struct netcontentrow *rows, s32 max);
+void netCheckQuit(void);
+
+// Tick passes (pdmain.c mainTick)
+void netTickReadPad(void);
+void netTickBegin(void);
+void netTickEnd(void);
+// Around a present-only pass (pdmain.c mainTick): what it does to an aim
+// this machine plays (a remote player's on the host, its own on a client) is
+// put back, so a crosshair moves on ticks alone, the same on both (netlagcomp.c)
+void netPresentBegin(void);
+void netPresentEnd(void);
+void netPosePuppets(f32 alpha);
+
+// lvTick: the host decides slow motion and pause
+s32 netClientLvupdate240(void);
+void netHostSetLvupdate240(s32 lvupdate240);
+
+// lvRender: a view nobody here looks at is simulated and its display list dropped
+s32 netDiscardPass(s32 playernum);
+
+// Mouse: summed over a presented frame's inputUpdate(), spent by one tick
+void netInputAccumulateMouse(void);
+void netInputMouseRaw(s32 *dx, s32 *dy);
+
+// gfxReset: the player-count row the display list pools are sized by
+s32 netGfxSizeIndex(s32 index);
+u32 netGfxVtxExtra(void);
+
+// Net.MaxPlayers: the humans a room this machine hosts can seat (2-12)
+s32 netSessionMaxPlayers(void);
+
+/**
+ * Entities (PLANS/netplay/spec-entities.md §1, §6): a prop slot's
+ * generation, bumped whenever the slot is allocated or freed, so an entity
+ * id (pool index, generation) never names two props. A side table, never a
+ * field of struct prop.
+ */
+struct prop;
+extern u16 *g_NetPropGen;
+void netPropGenAlloc(s32 maxprops);   // H1 varsreset.c, after g_Vars.props
+void netPropGenBump(struct prop *prop); // H2 propAllocate, H3 propFree
+// H5 lv.c lvRender, after propsTickPlayer: what this player's pass put on its screen
+void netHostNoteVisible(s32 playernum);
+
+/**
+ * Puppets on the client (PLANS/netplay/spec-entities.md §2-§4). In a
+ * match's stage a client's world is the host's: no AI, no damage, no drops,
+ * no pickups; every chr but its own player, every object, door and
+ * projectile is posed from the snapshots (netpuppets.c). g_NetClientWorld
+ * is set from the stage's start (netStageStart) to its end (H12).
+ */
+extern s32 g_NetClientWorld;
+#define NET_CLIENT (g_NetMode == NETMODE_CLIENT && g_NetClientWorld)
+
+// Whether the client poses this chr or player prop from snapshots (C1, C2,
+// C14): every PROPTYPE_CHR, and another machine's player once its first
+// record has come
+s32 netIsPuppet(struct prop *prop);
+// The pose step (proptick.c, before chraTickBg): the interpolated snapshot
+// into every puppet; puppets are made and taken away only here
+void netClientPosePuppets(void);
+// C5: objTick on the client
+u32 netPuppetObjTick(struct prop *prop);
+// C6c: objTickPlayer's full tick of a door on the client (its clipped vertices)
+void netPuppetDoorTick(struct prop *prop);
+// C12: currentPlayerInteract on the client: whether nothing was in reach
+// (the host does the opening)
+s32 netClientInteract(s32 eyespy);
+// pdmain.c and lvRender's player loops: another machine's player is not
+// simulated here once it is a puppet. netClientPuppetPlayerTick returns 1
+// to skip lvTickPlayer (keeping its body built); netClientRenderPass 1 to
+// skip the view's pass, and otherwise says whether this pass is the last
+s32 netClientPuppetPlayerTick(s32 playernum);
+// a seat's character changed mid-match (a join in progress): 1 once, as
+// that player (alive) is to have its body built again (playerTickChrBody,
+// the puppet's tick)
+s32 netPlayerBodyStaleTake(s32 playernum);
+s32 netPlayerBodyStaleIs(s32 playernum);
+void netSessionCharStale(s32 mpindex);
+s32 netClientRenderPass(s32 order, s32 count, s32 *islast);
+// after playermgrShuffle: the local player first, so the passes keyed to
+// index 0 (the swirl, propsTickPlayer's frame start, bgTick) run in its
+// pass when the others are skipped
+void netClientOrderPlayers(void);
+// the host's: an out-of-play seat's view is not built, and goes last in the
+// order so the frame's first pass is one that runs (netsession.c)
+void netHostOrderPlayers(void);
+s32 netHostRenderPass(s32 order, s32 count, s32 *islast);
+// a client in a match's stage, from its load (setup.c's scenario props)
+s32 netClientInMatch(void);
+// setup.c, in place of scenarioInitProps: 1 on a client, whose scenario
+// props are the host's entities and whose scenario state comes in the
+// snapshots (netscen.c); 0 on the host, which makes them
+s32 netScenInitProps(void);
+// The host refuses to start a net match it cannot play yet (menutick.c):
+// a client never starts one
+s32 netRefuseMatchStart(void);
+s32 netMatchStartRefused(void);
+// popacap.inc pacApplyNextVictim, host: the next victim's index past any
+// seat out of play (join in progress, protocol 9)
+s32 netPacVictimIndex(s32 index);
+// mpRenderModalText, client: a spectator's line in place of the camera
+// player's "Press START" (netspec.c); the Gfx pointer through void *
+s32 netSpecOn(void);
+void *netSpecRenderText(void *gdl);
+
+/**
+ * The online HUD (nethud.c, protocol 18): a line on screen when a player
+ * joins the match in progress, leaves, drops, comes back or starts watching,
+ * with the count of seats played; the chat; and the players. The chat key
+ * (Net.ChatKey, T; Space as well when none of player 1's binds uses it)
+ * opens a line the keyboard types into at once: Enter says it, Escape drops
+ * it. The players key (Net.PlayersKey, P) held shows who is in, with each
+ * one's score and ping. In a lobby room's Game Lobby, Space and the chat key
+ * open the same line for the room's chat (pdlobbyd's).
+ */
+void netHudFrame(void);         // pdsched.c, right after inputUpdate: the keys (ESC typed into the line is the line's)
+void *netHudRender(void *gdl);  // lv.c lvRender: over the local player's view, its HUD and menus
+void netHudAimFrame(void);      // lv.c lvRender, the local player's pass: the player under the crosshair (its name over its head)
+s32 netHudChatOpen(void);       // the line is open: the keyboard's keys are letters
+s32 netHudAteEscape(void);      // this frame's ESC was the line's (for what reads inputKeyPressedThisFrame)
+void netHudLobbyFrame(void);    // netlobbymenu.c: the Game Lobby is the dialog on screen this frame
+s32 netHudLobbyChatOpen(void);  // netlobbymenu.c: the Game Lobby's Chat row opens the line (a keyboard or mouse press)
+void netHudMainChatFrame(void); // netlobbymenu.c: the Briefing Room is, with the main menu's chat
+s32 netHudChatLine(char *out, s32 size, s32 maxchars); // the line as typed (its tail, a cursor); 0 shut
+void netHudSay(const char *text); // a line said from a menu (the pause menu's Players page)
+const char *netHudChatKeyName(void); // "T", or "T or Space"
+// The pause menu's Players page (netlobbymenu.c): the seats played out of the
+// match's and the spectators; its k-th row (the seats played or kept, then
+// the spectators), name and ping as shown; 0 past the last
+void netHudCounts(s32 *in, s32 *of, s32 *specs);
+s32 netHudPanelUp(void);       // the players panel (hold P) is up: killfeed.c keeps out of it
+s32 netHudPlayerRow(s32 k, char *name, s32 namesize, char *value, s32 valuesize);
+
+/**
+ * Events (PLANS/netplay/spec-entities.md §5; the wire is EVENTS in
+ * netproto.h, netevents.c does the work). The host's hooks record, behind
+ * g_NetMode == NETMODE_SERVER; the ones that return 1 tell the caller to
+ * return (a hudmsg or pickup sound sent to the machine whose player it is;
+ * a client's own death count refused, the host's arriving as E6).
+ */
+struct chrdata;
+struct coord;
+struct defaultobj;
+void netEvChrFireslot(struct chrdata *chr, s32 handnum, s32 withsound, s32 withbeam, struct coord *from, struct coord *to); // E1
+void netEvPlayerShot(s32 handnum);                                                                                       // E2
+void netEvExplosion(struct prop *source, struct coord *pos, s16 *rooms, s32 type, s32 playernum,
+		s32 makescorch, struct coord *arg6, s16 room, struct coord *arg8);                                              // E3
+void netEvSparks(s32 room, struct prop *prop, struct coord *pos, struct coord *arg3, struct coord *arg4, s32 type);     // E2/E4
+void netEvChrDamage(struct chrdata *chr, struct prop *aprop, s32 hitpart, s32 damageshield, s32 explosion);            // E4
+void netEvChoke(struct chrdata *chr, s32 choketype);                                                                    // E4
+void netEvObjDeform(struct defaultobj *obj, s32 level);                                                                 // E5
+void netEvGlassDestroy(struct defaultobj *obj);                                                                         // E5
+s32 netEvRecordDeath(s32 aplayernum, s32 vplayernum);                                                                   // E6
+s32 netEvHudmsg(char *text, s32 type, s32 conf00, s32 conf01, s32 conf02, u32 textcolour, u32 glowcolour,
+		u32 alignh, s32 conf16, u32 alignv, s32 conf18, s32 arg14, u32 flags);                                           // E7
+s32 netEvPickupSound(s32 sound);                                                                                        // E8
+void netEvOriginMade(s32 on);   // E8: what follows the pass's player's machine makes itself (its CamSpy pickup)
+void netEvNbomb(struct coord *pos, struct prop *owner);                                                                 // E9
+void netEvGas(struct coord *pos);                                                                                       // E9
+
+/**
+ * Hits (PLANS/NETPLAY.md "Hits", netlagcomp.c). Around shotCalculateHits'
+ * chr loop: on the host, in a remote player's pass, every other chr on that
+ * screen is put where that player saw it when it fired (its matrices
+ * rebuilt in fresh gfx memory, the live ones never written) and put back
+ * after; on a client the shot's hits are logged for the harness.
+ * Net.LagComp=0 turns the rewind off, Net.LagCompMaxMs caps it (300).
+ */
+struct shotdata;
+void netLagCompShotBegin(struct shotdata *sd, s32 isshooting);
+void netLagCompShotEnd(struct shotdata *sd, s32 isshooting, s32 cheap);
+// lvRender, host: around a remote player's autoaimTick and handsTickAttack
+// (its autoaim follows the others where it saw them, so with the autoaim on
+// everything on its screen is rewound for the two)
+void netLagCompPassBegin(void);
+void netLagCompRaiseOldDefault(void); // Mod.SettingsRevision 2: Net.LagCompMaxMs 200 -> 300
+void netLagCompWalkOffOnce(void);     // Mod.SettingsRevision 3: Net.LagCompWalk off
+s32 netLagCompWalkOn(void);           // Net.LagCompWalk: the host's walk and the client's replays among the chrs as seen
+void netLagCompPassEnd(void);
+const struct coord *netLagCompAimPos(struct prop *prop); // the autoaim's line of sight to a chr: its rewound place in a remote pass
+// bmoveTick, host: around a remote player's bwalkTick, the chrs near it where
+// its client saw them (Net.LagCompWalk)
+void netLagCompWalkBegin(void);
+void netLagCompWalkEnd(void);
+// A guest's blast (netlagcomp.c, F3 20261010-030750): an explosion from a
+// client player's projectile or Phoenix round hurts the chrs where that
+// player saw them. The host's own and offline play are untouched.
+void netLagCompBlastFromWeapon(s32 on);        // propExplode: the explosion about to be made is a weapon's (a projectile, a mine)
+void netLagCompBlastNote(s32 expindex, s32 type, s32 owner, struct coord *pos); // explosionCreate: whether this explosion is rewound, and how far
+s32 netLagCompBlastPos(s32 expindex, struct prop *prop, struct prop *expprop, struct coord *out); // explosionInflictDamage: a chr's place for the blast
+void netLagCompBlastProps(s32 expindex, s16 *propnums, s32 max, f32 radius, struct prop *expprop); // ... and chrs out of its rooms now
+void netLagCompBlastHit(s32 expindex, struct prop *prop, f32 damage, s32 firstframe); // the harness's record of a blast's damage
+void netLagCompAimTrace(void);  // --net-lagcomp-debug: a line per tick of a player's aim on both machines
+
+/**
+ * Online co-op: the solo missions for up to twelve players (netcoop.c,
+ * PLANS/netplay/spec-coop.md). The host plays the mission as offline co-op
+ * does (src/game/coop.c widens "the other player"); a client's world is the
+ * host's, the mission's own state (cutscene, objectives, timer, alarm)
+ * coming in the snapshots' block.
+ */
+struct netcoopsetup {
+	s32 on;           // the lobby room is a co-op mission, not a match
+	s32 stageindex;   // the mission in its set: g_SoloStages index (0 .. SOLOSTAGEINDEX_WAR), or a conversion's mission number
+	s32 difficulty;   // DIFF_A/SA/PA
+	s32 radar;
+	s32 friendlyfire;
+	char game[16];    // the set: "" Perfect Dark's, else a conversion's tag ("ge", "gf64", "tnd64": protocol 14)
+	s32 campaign;     // the host picks the missions in its own menus (the set's folder); each one is the session's next match
+	s32 anti;         // a counter-op mission (protocol 32): each member's side its room team, 0 agent and 1 counter-op
+};
+extern struct netcoopsetup g_NetCoopSetup;
+// Room Settings: a hash of the host's rules (the SYNC keys and Simulant AI), to see the Room Rules page changed one
+u32 netRulesSyncHash(void);
+// mainmenu.c Accept Mission in a net session: 1 handled (started, or refused with a notice)
+s32 netCoopAcceptMission(void);
+// player.c, the host: an online counter-op mission none of whose agents is
+// in play any more (every one left): 1 once, to end it
+s32 netCoopAgentsGone(void);
+// player.c playerSpawnAnti, the host: a counter-op takes this guard (freed
+// next); a setup chr's copy goes from every client too (netcoop.c)
+struct prop;
+void netCoopAntiTookChr(struct prop *prop);
+// mainmenu.c Abort Mission: 1 handled (a client leaves; the host's abort ends it for all)
+s32 netCoopClientAbort(void);
+// pdmain.c mainEndStage's co-op branch: MATCH_END from the host, the final block on a client
+void netCoopMatchEnded(void);
+// The host, chraicommands.c on a converted mission: GoldenEye's CameraSwitch
+// (ai00df, setup command `cmdindex`) and a list's screen fade (aiFadeScreen),
+// for the clients to take into their own view (protocol 17)
+struct warpparams;
+void netCoopHostCameraSwitch(s32 cmdindex, struct warpparams *params);
+void netCoopHostFade(u32 colour, s16 frames);
+// pdmain.c mainEndStage's co-op branch: out of the mission at once, as the end
+// screen's close goes (a GoldenEye mission's report is the folder's, gexfront.c)
+void netCoopLeaveMission(void);
+// gexfront.c gexFrontGoBack online: no match's flags (or, on the host, match)
+// outlive a stage that goes back to the folder that way
+void netCoopFolderBack(void);
+// pdmain.c mainEndStage's co-op branch: a Cinema-page cinema's end (no report),
+// 1 when the match was one (protocol 27)
+s32 netCoopCinemaEnded(void);
+// the cinema this machine's match is (GECINEMA_NET_*), 0 a mission or none
+s32 netCoopCinemaKind(void);
+// the host: an AI list's line goes to every player (a converted GoldenEye
+// mission's, a watched cinema's)
+s32 netCoopListTextToAll(void);
+// objectives.c objectiveCheck on a client: the host's status, 1 when known
+s32 netCoopObjectiveStatus(s32 index, s32 *status);
+// lv.c lvTickPlayer, the host: a client's own settings (NETKEY_PLAYER: the
+// third person camera, COD aiming...) in their variables around its
+// playerTick, the host's own back after (protocols 19, 20)
+void netPlayersOwnBegin(s32 playernum);
+void netPlayersOwnEnd(void);
+// player.c playerTickThirdPerson, the host: a client's tethered body as its
+// command carried it (protocol 19, NETCMD_BODY); 0 none (radians, 0 to tau)
+s32 netPlayersHostBody(s32 playernum, f32 *facing, f32 *travel, s32 *travelset);
+// player.c playerDieByShooter: a player's death; on the host the one that
+// leaves nobody in play alive loses the mission (protocol 22)
+void netCoopPlayerDied(s32 playernum);
+// the player whose death lost the mission, -1 while somebody lives (both sides)
+s32 netCoopLostSubject(void);
+// gedeathcam.c: GoldenEye's replay plays for this player's death online (the
+// mission's last: the host's pass poses the body, its own machine watches)
+s32 netCoopReplaysDeath(s32 playernum);
+// player.c playerDieByShooter, the host, before the drop: this online co-op
+// death comes back (Mission Respawn's rules: where the player fell, its kit
+// kept; Mission Lives the team's), and nothing is dropped
+s32 netCoopDeathRespawns(void);
+// that player is dead and its death comes back (host; a client knows its own); 0 offline
+s32 netCoopRespawnDue(s32 playernum);
+// the host: a dead player in play will come back (the mission is not over)
+s32 netCoopAnyRespawnDue(void);
+// netents.c, a client's new life from the host's: Mission Respawn's, taken once
+s32 netCoopTakeLocalRespawn(void);
+// modrespawn.c modRespawnReset, every stage
+void netCoopStageReset(void);
+// player.c / mplayer.c: this machine's dead co-op player watches the others
+// (netspec.c; Mission Respawn off): its camera, 1 when it built one, and its
+// line along the foot of the view
+s32 netSpecDeadCameraTick(void);
+s32 netSpecDeadOn(void);
+#define NET_DEAD_WATCHING() (g_NetMode != NETMODE_NONE && g_Vars.currentplayer->isdead && netSpecDeadOn())
+// coop.c, the host: that player's seat is open (nobody plays it, its player
+// killed to vacate it): not counted among the living or the dead; 0 offline
+s32 netPlayerOutOfPlay(s32 playernum);
+// playerreset.c: a co-op mission's first life, every player on the first's
+// spot (pos and rooms set, the facing returned); player.c: a co-op life's
+// pad, other players no obstacle (rooms: RoomNum[8])
+struct coord;
+f32 netCoopStackSpawn(struct coord *pos, s16 *rooms);
+f32 netCoopSpawnPick(struct coord *pos, s16 *rooms);
+// player.c, the host: a join in progress's first life on a living player's
+// spot (pos, rooms and the facing set); 0 for the mission's own spawn
+s32 netCoopJoinSpawn(struct coord *pos, s16 *rooms, f32 *turnanglerad);
+// player.c, the host, host migration (netmigrate.c): a player of a match
+// carried on under a new host given its life back where the old host last had
+// it (pos, rooms, the facing; 0 not this player's), its guns and ammo before
+// playerSpawn, its hands (1: they are this file's), its health and shield after
+s32 netMigrateTakeSpawn(struct coord *pos, s16 *rooms, f32 *angle);
+void netMigrateRestoreInventory(void);
+s32 netMigrateSpawnHands(void);
+void netMigrateRestoreHealth(void);
+// gecinema.c on a client: the host's GO not here yet (the stage loaded), and
+// whether this machine joined the running match (GoldenEye's opening is then
+// skipped: the mission is under way)
+s32 netClientAwaitingGo(void);
+s32 netClientJoinedInProgress(void);
+// the host starts a co-op mission for the session (lobby launch, tests); 1 started
+s32 netCoopHostStart(const char *game, s32 stageindex, s32 difficulty, s32 radar, s32 friendlyfire);
+const char *netCoopMissionName(s32 stageindex);      // "dataDyne Defection" (langGet's, with its newline)
+const char *netCoopMissionNameOf(const char *game, s32 index); // a set's mission ("Dam" of "ge"); "" PD's
+const char *netCoopGameName(const char *game);       // "Perfect Dark", "GoldenEye", a hack's name
+s32 netCoopGameMissions(const char *game);           // missions the set has here (0: not converted)
+s32 netCoopGameTag(s32 n, char *tag, s32 size);      // the n-th set offered here ("" first); 0 past the end
+// A campaign room (netcoop.c): the host plays its set's missions from its own menus, each the session's next co-op match
+s32 netCoopCampaignOn(void);
+void netCoopCampaignEnd(void);                       // the room is left
+s32 netCoopCampaignAfterMatch(void);                 // host, after a match: back to the set's menus; 1 handled
+void netCoopCampaignMenusOpen(void);                 // host: the set's menus again (the Game Lobby's row)
+void netCoopModeName(const char *game, s32 difficulty, char *out, s32 size); // "Co-op Agent", "Co-op Secret Agent"
+const char *netCoopDifficultyNameOf(const char *game, s32 difficulty); // a set's own name for it ("Secret Agent"), no newline
+
+// The session's hooks (H1-H14, HA-HD)
+#include "net/netsession.h"
+
+// The lobby's rooms (Online Game)
+#include "net/netlobby.h"
+
+#endif

@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modrun.h"
 #include "constants.h"
 #ifdef PD_PHYSICS
 #include "ragdoll.h" // MOD: ragdoll physics
@@ -104,12 +105,16 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "namebanner.h" // MOD: name banner
+#include "gelevels.h" // MOD: GoldenEye levels
+#include "levelgenstage.h" // MOD: level generator
 #endif
 #ifndef PLATFORM_N64
 #include "video.h"
 #ifdef PD_GRAVITY
 #include "gravity.h" // MOD: gravity
 #endif
+#include "system.h"
+#include "game/modrandom.h" // MOD: frame-time line
 #endif
 
 struct sndstate *g_MiscSfxAudioHandles[3];
@@ -381,7 +386,15 @@ void lvReset(s32 stagenum)
 		bgBuildTables(g_Vars.stagenum);
 		skyReset(g_Vars.stagenum);
 
+#ifndef PLATFORM_N64
+		// a mission of Perfect Dark's starts its music from its intro's list
+		// (aiPlayDefaultTracks); an arena a Randomizer run lands on has no
+		// such command (modRunStageStartsMusic())
+		// MOD: a GoldenEye level's converted setup has no such command either
+		if (g_Vars.normmplayerisrunning || modRunStageStartsMusic(stagenum) || gelevelsIsStage(stagenum) || levelgenIsStage(stagenum)) {
+#else
 		if (g_Vars.normmplayerisrunning) {
+#endif
 			musicSetStageAndStartMusic(stagenum);
 		} else {
 			musicSetStage(stagenum);
@@ -447,6 +460,14 @@ void lvReset(s32 stagenum)
 	case STAGE_ATTACKSHIP:
 	case STAGE_TEST_OLD:
 		starsReset();
+		break;
+	default:
+#ifndef PLATFORM_N64
+		// a Randomizer run's landing on a stage whose sky has stars
+		if (modRunWantsStars(g_Vars.stagenum)) {
+			starsReset();
+		}
+#endif
 		break;
 	}
 
@@ -1280,7 +1301,11 @@ Gfx *lvRender(Gfx *gdl)
 			if (g_Vars.lockscreen) {
 				gdl = bviewDrawMotionBlur(gdl, 0xffffffff, 255);
 				g_Vars.lockscreen--;
-			} else if (var8009dfc0) {
+			} else if (var8009dfc0
+#ifndef PLATFORM_N64
+					&& !menuHasLevelBackground()
+#endif
+					) {
 				gdl = viRenderViewportEdges(gdl);
 				gdl = bgScissorToViewport(gdl);
 				mtx00016748(1);
@@ -1833,6 +1858,12 @@ Gfx *lvRender(Gfx *gdl)
 				if (g_Vars.mplayerisrunning) {
 					gdl = mpRenderModalText(gdl);
 				}
+
+#ifndef PLATFORM_N64
+				if (var80075d60 == 2) {
+					modRandomQueueEventOverlay();
+				}
+#endif
 
 				if (g_Vars.currentplayer->dostartnewlife) {
 					playerStartNewLife();
@@ -2551,7 +2582,11 @@ void lvTick(void)
 	// MOD: ragdoll physics. After the props have moved (lifts, doors) and
 	// with this frame's lvupdate, so bodies on a lift are drawn where the
 	// lift is now, not where it was last frame (stutter at high framerates)
-	ragdollTick();
+	{
+		u64 perf0 = sysGetMicroseconds();
+		ragdollTick();
+		g_ModPerfUs[1] += sysGetMicroseconds() - perf0;
+	}
 #endif
 #ifdef PD_CLIPCHECK
 	clipcheckTick(); // MOD: clipping checks - drawn surfaces of newly loaded rooms

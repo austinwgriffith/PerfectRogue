@@ -10,6 +10,9 @@
 #include "lib/music.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "gemusic.h"
+#endif
 
 #define FADETYPE_STOP  0
 #define FADETYPE_PAUSE 1
@@ -402,6 +405,9 @@ void musicStartTrackAsMenu(s32 tracknum)
 void musicSetStageAndStartMusic(s32 stagenum)
 {
 	g_MusicStageNum = stagenum;
+#ifndef PLATFORM_N64
+	geMusicStageReset();
+#endif
 
 	musicStartPrimary(0);
 
@@ -416,6 +422,9 @@ void musicSetStageAndStartMusic(s32 stagenum)
 void musicSetStage(s32 stagenum)
 {
 	g_MusicStageNum = stagenum;
+#ifndef PLATFORM_N64
+	geMusicStageReset();
+#endif
 }
 
 void musicStop(void)

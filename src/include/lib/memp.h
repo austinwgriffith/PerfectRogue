@@ -16,4 +16,5 @@ void mempResetPool(u8 pool);
 void mempDisablePool(u8 pool);
 void *mempAllocFromRight(u32 len, u8 pool);
 
+u32 mempGetStageFreeTotal(void);
 #endif

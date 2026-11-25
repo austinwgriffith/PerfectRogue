@@ -1,4 +1,7 @@
 #include <ultra64.h>
+#include <string.h>
+#include "game/modrun.h"
+#include "game/modrandom.h"
 #include "constants.h"
 #include "game/chraction.h"
 #include "game/debug.h"
@@ -174,6 +177,16 @@ s32 objectiveGetCount(void)
 
 char *objectiveGetText(s32 index)
 {
+#ifndef PLATFORM_N64
+	// A generated objective's text is a sentence about what the roll placed
+	// and is in no language bank. See modrandom.c.
+	char *generated = modRandomGetObjectiveText(index);
+
+	if (generated) {
+		return generated;
+	}
+#endif
+
 	if (index < 10 && g_Objectives[index]) {
 		return langGet(g_Objectives[index]->text);
 	}
@@ -225,6 +238,35 @@ s32 objectiveCheck(s32 index)
 					}
 					break;
 				case OBJECTIVETYPE_COMPFLAGS:
+					if (((u32)cmd[1] & MODRANDOM_KILLCHR_TAG_MASK) == MODRANDOM_HOLD_TAG) {
+						reqstatus = modRandomHoldStatus();
+						break;
+					}
+					if (((u32)cmd[1] & MODRANDOM_KILLCHR_TAG_MASK) == MODRANDOM_KILLCHR_TAG) {
+						s32 roundstatus = modRandomTargetStatus(cmd[1] & 0xffff);
+						if (roundstatus >= 0) {
+							reqstatus = roundstatus;
+							break;
+						}
+						struct chrdata *target = chrFindById(NULL, cmd[1] & 0xffff);
+
+						if (target == NULL) {
+							reqstatus = OBJECTIVE_FAILED;
+						} else if (!chrIsDead(target)) {
+							reqstatus = OBJECTIVE_INCOMPLETE;
+						}
+						break;
+					}
+#ifndef PLATFORM_N64
+					// A Randomizer run's room objective names no flag and is
+					// the run's to answer (modrun.c, MODRUN_OBJFLAGS)
+					if (cmd[1] == 0 && modRunIsOn()) {
+						if (!modRunObjectiveIsDone()) {
+							reqstatus = OBJECTIVE_INCOMPLETE;
+						}
+						break;
+					}
+#endif
 					if (!chrHasStageFlag(NULL, cmd[1])) {
 						reqstatus = OBJECTIVE_INCOMPLETE;
 					}
@@ -394,7 +436,9 @@ void objectivesCheckAll(void)
 			if (g_ObjectiveStatuses[i] != status) {
 				g_ObjectiveStatuses[i] = status;
 
-				if (objectiveGetDifficultyBits(i) & (1 << lvGetDifficulty())) {
+				if ((objectiveGetDifficultyBits(i) & (1 << lvGetDifficulty()))
+						&& (status == OBJECTIVE_FAILED || modRunIsOn() || modRandomIsEndless()
+							|| !modRandomGetObjectiveText(i))) {
 #if VERSION >= VERSION_JPN_FINAL
 					u8 jpnstr[] = {0, 0, 0};
 					jpnstr[0] = 0x80;

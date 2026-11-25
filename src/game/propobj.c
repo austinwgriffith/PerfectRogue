@@ -1,4 +1,13 @@
+#ifndef PLATFORM_N64
+#include "gesfxdoor.h"
+#endif
 #include <ultra64.h>
+#include "game/modcareer.h"
+#include "game/modrules.h"
+#include "game/modoptions.h"
+#include "game/modalarm.h"
+#include "game/modrandom.h"
+#include "game/modspawnedit.h"
 #include "constants.h"
 #include "game/bondmove.h"
 #include "game/bondwalk.h"
@@ -15,6 +24,8 @@
 #include "game/propsnd.h"
 #ifndef PLATFORM_N64
 #include "system.h" // MOD: cutscene lift sound - sysLogPrintf
+#include "levelgenstage.h"
+#include "game/modlevelgen.h"
 #endif
 #include "game/objectives.h"
 #include "game/game_096360.h"
@@ -123,6 +134,11 @@ u32 g_PlayersDetonatingMines = 0x00000000;
 s32 g_NextWeaponSlot = 0;
 s32 g_NextHatSlot = 0;
 struct linkliftdoorobj *g_LiftDoors = NULL;
+// Keep NPC calls from changing a lift's destination while it answers a player call.
+static struct {
+	struct prop *lift;
+	s8 stopnum;
+} g_LiftPlayerCalls[10];
 struct padlockeddoorobj *g_PadlockedDoors = NULL;
 struct safeitemobj *g_SafeItems = NULL;
 struct linksceneryobj *g_LinkedScenery = NULL;
@@ -170,7 +186,7 @@ bool doorCallLift(struct prop *doorprop, bool allowclose)
 		while (link) {
 			if (doorprop == link->door && link->lift
 					&& (link->lift->type == PROPTYPE_OBJ || link->lift->type == PROPTYPE_DOOR)) {
-				bool type = link->lift->obj->type;
+				s32 type = link->lift->obj->type;
 				handled = true;
 
 				if (type == OBJTYPE_DOOR) {
@@ -182,41 +198,80 @@ bool doorCallLift(struct prop *doorprop, bool allowclose)
 					// in practice so this branch is unused.
 					doorsActivate(link->lift, allowclose);
 				} else if (type == OBJTYPE_LIFT) {
-					if (allowclose
-#if VERSION < VERSION_NTSC_1_0
-							&& g_Vars.currentplayer->lift == link->lift
+					struct liftobj *lift = (struct liftobj *)link->lift->obj;
+					s32 liftnum;
+					bool playercallblocked = false;
+
+#ifndef PLATFORM_N64
+					if (!allowclose && levelgenIsStage(g_Vars.stagenum)) {
+						// Generated maps have stairs. Pathfinding must not
+						// send the car away while the player is trying to board.
+						return true;
+					}
 #endif
-							&& door->base.type == OBJTYPE_DOOR
-							&& !doorIsClosed(door)) {
-						handled = false;
-					} else {
-						bool vacant = true;
-						s32 numchrslots = chrsGetNumSlots();
-						s32 i;
-
-						for (i = 0; i < PLAYERCOUNT(); i++) {
-							if (g_Vars.players[i]->lift == link->lift) {
-								vacant = false;
+					for (liftnum = 0; liftnum < ARRAYCOUNT(g_Lifts); liftnum++) {
+						if (g_LiftPlayerCalls[liftnum].lift == link->lift) {
+							if (lift->levelcur == g_LiftPlayerCalls[liftnum].stopnum
+									&& lift->levelaim == g_LiftPlayerCalls[liftnum].stopnum) {
+								g_LiftPlayerCalls[liftnum].lift = NULL;
+							} else if (!allowclose) {
+								playercallblocked = true;
 							}
-						}
-
-						if (vacant) {
-							for (i = 0; i < numchrslots; i++) {
-								/**
-								 * @bug: This is missing a chrIsDead check.
-								 * If a chr dies in a lift it can no longer be called.
-								 */
-								if (g_ChrSlots[i].prop && g_ChrSlots[i].lift == link->lift) {
-									vacant = false;
-									break;
-								}
-							}
-						}
-
-						if (vacant) {
-							liftGoToStop((struct liftobj *) link->lift->obj, link->stopnum);
+							break;
 						}
 					}
+
+					if (!playercallblocked) {
+						if (allowclose
+#if VERSION < VERSION_NTSC_1_0
+								&& g_Vars.currentplayer->lift == link->lift
+#endif
+								&& door->base.type == OBJTYPE_DOOR
+								&& !doorIsClosed(door)) {
+							handled = false;
+						} else {
+							bool vacant = true;
+							bool playerCanCallWithNpc = allowclose && g_Vars.stagenum == STAGE_AIRBASE && modRandomIsOn();
+#ifndef PLATFORM_N64
+							playerCanCallWithNpc |= allowclose && levelgenIsStage(g_Vars.stagenum);
+#endif
+							s32 numchrslots = chrsGetNumSlots();
+							s32 i;
+
+							for (i = 0; i < PLAYERCOUNT(); i++) {
+								if (g_Vars.players[i]->lift == link->lift) {
+									vacant = false;
+								}
+							}
+
+							// Player calls take priority over NPC riders on these maps.
+							if (vacant && !playerCanCallWithNpc) {
+								for (i = 0; i < numchrslots; i++) {
+									/**
+									 * @bug: This is missing a chrIsDead check.
+									 * If a chr dies in a lift it can no longer be called.
+									 */
+									if (g_ChrSlots[i].prop && g_ChrSlots[i].lift == link->lift) {
+										vacant = false;
+										break;
+									}
+								}
+							}
+
+							if (vacant) {
+								if (allowclose) {
+									for (liftnum = 0; liftnum < ARRAYCOUNT(g_Lifts); liftnum++) {
+										if (g_Lifts[liftnum] == link->lift) {
+											g_LiftPlayerCalls[liftnum].lift = link->lift;
+											g_LiftPlayerCalls[liftnum].stopnum = link->stopnum;
+											break;
+										}
+									}
+								}
+								liftGoToStop(lift, link->stopnum);
+							}
+							}
+						}
 				}
 			}
 
@@ -229,6 +284,7 @@ bool doorCallLift(struct prop *doorprop, bool allowclose)
 
 bool doorIsPadlockFree(struct doorobj *door)
 {
+	if (modAreMissionDoorsUnlocked()) return true;
 	if (door->base.hidden & OBJHFLAG_PADLOCKEDDOOR) {
 		struct padlockeddoorobj *padlockeddoor = g_PadlockedDoors;
 
@@ -1767,6 +1823,97 @@ void objMergeColourFracs(s32 *colour, s32 shademode, f32 fracs[4])
 
 struct hovtype g_HovTypes[];
 
+#ifndef PLATFORM_N64
+/**
+ * MOD (2026-11-16, the generated rooftops): a pane of glass laid flat as a
+ * floor over a drop. The level's setup gives such a pane no box of its own to
+ * bump into (no OBJFLAG_00000100); it gets a floor tile over the top of its
+ * bounding box instead, so it is walked on - until it is shot and breaks, and
+ * whoever stood on it falls.
+ */
+static bool objIsGlassFloor(struct defaultobj *obj)
+{
+	return obj->type == OBJTYPE_GLASS && (obj->flags & OBJFLAG_00000100) == 0 && levelgenIsStage(g_Vars.stagenum);
+}
+#endif
+
+#ifndef PLATFORM_N64
+/**
+ * The floor tile over a flat pane: across its two long sides, at its top face
+ * (whichever of its axes stands nearest upright is its thickness).
+ */
+static void objGlassFloorTile(struct defaultobj *obj, struct geotilef *tile, struct modelrodata_bbox *bbox)
+{
+	const f32 mn[3] = { bbox->xmin, bbox->ymin, bbox->zmin };
+	const f32 mx[3] = { bbox->xmax, bbox->ymax, bbox->zmax };
+	f32 (*rot)[3] = obj->realrot;
+	struct coord *pos = &obj->prop->pos;
+	s32 up = 0, u, v, i, j;
+	f32 best = -1.0f, top;
+
+	for (i = 0; i < 3; i++) {
+		const f32 a = rot[i][1] < 0 ? -rot[i][1] : rot[i][1];
+
+		if (a > best) {
+			best = a;
+			up = i;
+		}
+	}
+	u = up == 0 ? 1 : 0;
+	v = up == 2 ? 1 : 2;
+	top = rot[up][1] >= 0 ? mx[up] : mn[up];
+
+	for (i = 0; i < 4; i++) {
+		const f32 cu = (i == 0 || i == 1) ? mn[u] : mx[u];
+		const f32 cv = (i == 0 || i == 3) ? mn[v] : mx[v];
+
+		for (j = 0; j < 3; j++) {
+			tile->vertices[i].f[j] = pos->f[j] + rot[u][j] * cu + rot[v][j] * cv + rot[up][j] * top;
+		}
+	}
+
+	// (wound as the level's own floor tiles are, seen from above)
+	{
+		f32 area = 0;
+
+		for (i = 0; i < 4; i++) {
+			const struct coord *a = &tile->vertices[i], *b = &tile->vertices[(i + 1) % 4];
+
+			area += a->x * b->z - b->x * a->z;
+		}
+		if (area > 0) {
+			struct coord t = tile->vertices[1];
+
+			tile->vertices[1] = tile->vertices[3];
+			tile->vertices[3] = t;
+		}
+	}
+
+	tile->header.type = GEOTYPE_TILE_F;
+	tile->header.flags = GEOFLAG_FLOOR1 | GEOFLAG_FLOOR2;
+	tile->header.numvertices = 4;
+	tile->floorcol = 0xfff;
+#if VERSION >= VERSION_NTSC_1_0
+	tile->floortype = FLOORTYPE_DEFAULT;
+#endif
+
+	for (i = 0; i < 3; i++) {
+		tile->min[i] = 0;
+		tile->max[i] = 0;
+
+		for (j = 1; j < 4; j++) {
+			if (tile->vertices[j].f[i] < tile->vertices[tile->min[i]].f[i]) {
+				tile->min[i] = j;
+			}
+
+			if (tile->vertices[j].f[i] > tile->vertices[tile->max[i]].f[i]) {
+				tile->max[i] = j;
+			}
+		}
+	}
+}
+#endif
+
 void func0f069850(struct defaultobj *obj, struct coord *pos, f32 rot[3][3], struct geocyl *cyl)
 {
 	Mtxf mtx;
@@ -1856,7 +2003,19 @@ void func0f069b4c(struct defaultobj *obj)
 
 		if (rodata != NULL) {
 			func0f070ca0(obj, (struct geotilef *)ptr, GEOFLAG_WALL | GEOFLAG_BLOCK_SIGHT | GEOFLAG_BLOCK_SHOOT, NULL, &rodata->type19);
+			ptr += 0x40;
 		}
+
+#ifndef PLATFORM_N64
+		// MOD: a glass floor's tile (objIsGlassFloor)
+		if (objIsGlassFloor(obj)) {
+			struct modelrodata_bbox *bbox = objFindBboxRodata(obj);
+
+			if (bbox != NULL) {
+				objGlassFloorTile(obj, (struct geotilef *)ptr, bbox);
+			}
+		}
+#endif
 	}
 }
 
@@ -2055,6 +2214,13 @@ struct prop *objInit(struct defaultobj *obj, struct modeldef *modeldef, struct p
 		if (modelGetPartRodata(modeldef, MODELPART_BASIC_0066)) {
 			obj->geocount++;
 		}
+
+#ifndef PLATFORM_N64
+		// MOD: a glass floor's tile (objIsGlassFloor)
+		if (objIsGlassFloor(obj)) {
+			obj->geocount++;
+		}
+#endif
 
 		geosize = obj->geocount * 0x40;
 
@@ -2541,11 +2707,22 @@ void objFree(struct defaultobj *obj, bool freeprop, bool canregen)
 		objFreeEmbedmentOrProjectile(obj->prop);
 
 		child = obj->prop->child;
+#ifndef PLATFORM_N64
+		// MOD: take the children off first, and never free the object under
+		// itself: a ring in the child list (found going back to the menu from
+		// a failed run) recursed until the stack ran out
+		obj->prop->child = NULL;
+#endif
 
 		while (child) {
 			struct prop *next = child->next;
 
-			objFreePermanently(child->obj, true);
+#ifndef PLATFORM_N64
+			if (child->obj && child->obj != obj && child->type != PROPTYPE_CHR && child->type != PROPTYPE_PLAYER)
+#endif
+			{
+				objFreePermanently(child->obj, true);
+			}
 
 			child = next;
 		}
@@ -4492,12 +4669,15 @@ void weaponTick(struct prop *prop)
 
 			if (weapon->timer240 < 0) {
 				propUnsetDangerous(prop);
+				modCareerGrenadeExploding(weapon->weaponnum == WEAPON_GRENADE); // MOD: Gauntlet - 4 kills with one grenade
 
 				if (weapon->gunfunc == FUNC_2) {
 					propExplode(prop, EXPLOSIONTYPE_SDGRENADE);
 				} else {
 					propExplode(prop, (obj->flags2 & OBJFLAG2_WEAPON_HUGEEXP) ? EXPLOSIONTYPE_HUGE17 : EXPLOSIONTYPE_ROCKET);
 				}
+
+				modCareerGrenadeExploding(false);
 
 				obj->hidden |= OBJHFLAG_DELETING;
 
@@ -4606,10 +4786,12 @@ void weaponTick(struct prop *prop)
 		if (g_PlayersDetonatingMines != 0) {
 			s32 ownerplayernum = (obj->hidden & 0xf0000000) >> 28;
 			struct chrdata *parentchr = prop->parent ? prop->parent->chr : NULL;
+			bool heldByPlayer = prop->parent && prop->parent->type == PROPTYPE_PLAYER;
 
 			// If a player manages to throw a mine on themselves, it will not detonate.
 			// You can't throw a mine on yourself anyway, so this check always passes
-			if (prop->parent == NULL || parentchr == NULL || mpPlayerGetIndex(parentchr) != ownerplayernum) {
+			// A mine attached to a player's hand is still held, not a placed mine.
+			if (!heldByPlayer && (prop->parent == NULL || parentchr == NULL || mpPlayerGetIndex(parentchr) != ownerplayernum)) {
 				if (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) {
 					if (ownerplayernum == 2) {
 						u32 mask = 0;
@@ -4992,6 +5174,11 @@ s32 glassCalculateOpacity(struct coord *pos, f32 xludist, f32 opadist, f32 arg3)
 }
 
 struct prop *g_Lifts[10] = {NULL};
+
+void liftResetPlayerCalls(void)
+{
+	memset(g_LiftPlayerCalls, 0, sizeof(g_LiftPlayerCalls));
+}
 
 #define BOB(minamount, randamount, accel, maxspeed) \
 	minamount, randamount, PALUPF(accel), PALUPF(maxspeed)
@@ -7331,6 +7518,14 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 										func0f0341dc(hitchr, gsetGetDamage(&weapon->gset), &var8009ce78, &weapon->gset, ownerprop,
 												g_EmbedHitPart, g_EmbedProp, g_EmbedNode, g_EmbedModel, g_EmbedSide, var8006993c);
 
+										// MOD: a thrown knife to the head gives the thrower 10% shield
+										if (weapon->weaponnum == WEAPON_COMBATKNIFE && g_EmbedHitPart == HITPART_HEAD
+												&& modRandomIsOn() && hitprop->type == PROPTYPE_CHR
+												&& ownerprop && ownerprop == g_Vars.currentplayer->prop) {
+											const f32 frac = playerGetShieldFrac() + 0.1f;
+											playerSetShieldFrac(frac > 1.0f ? 1.0f : frac);
+										}
+
 										if (ownershield <= 0.0f) {
 											chrEmitSparks(hitchr, g_EmbedProp, g_EmbedHitPart, &sp5e8, &sp5f4, ownerprop ? ownerprop->chr : NULL);
 
@@ -7977,6 +8172,13 @@ void doorTick(struct prop *doorprop)
 	struct model *model = door->base.model;
 	f32 prevfrac = door->frac;
 	u32 stack[2];
+	if (modAreMissionDoorsUnlocked() && (door->base.hidden & OBJHFLAG_LIFTDOOR) == 0) {
+		door->keyflags = 0;
+		door->base.flags2 &= ~(OBJFLAG2_LOCKEDFRONT | OBJFLAG2_LOCKEDBACK);
+		if (door->doortype != DOORTYPE_LASER) {
+			door->base.flags &= ~(OBJFLAG_CANNOT_ACTIVATE | OBJFLAG_DEACTIVATED);
+		}
+	}
 
 #if VERSION < VERSION_PAL_BETA
 	static u32 debugdoor = 0;
@@ -8474,6 +8676,137 @@ void liftForgetSilentStarts(void)
 }
 #endif
 
+#ifndef PLATFORM_N64
+/**
+ * MOD (2026-11-17): the generated levels' lifts (the penthouse's, the building
+ * site's) have no doors. Rather than go round their stops on their own, they
+ * stand still until used, as the lifts of the multiplayer Grid do: press
+ * activate standing on one and it goes to its next stop (up, then back down);
+ * press it at the shaft's edge and it is called to the stop on your floor.
+ * See liftLevelgenInteract (called from currentPlayerInteract when there is
+ * nothing else in front of the player to use).
+ */
+static bool liftLevelgenHold(struct prop *prop)
+{
+	return levelgenIsStage(g_Vars.stagenum) && !levelgenLiftsAuto();
+}
+
+/**
+ * MOD (2026-11-19): the pipeworks' lifts are platforms that go up and down
+ * on their own, as the stock doorless lifts do, but wait a moment at each
+ * stop to be stepped on or off. True while lift should go on waiting.
+ */
+#define LIFTAUTO_SLOTS 8
+#define LIFTAUTO_WAIT  100   /* 60ths at a stop */
+static struct liftobj *g_LiftAutoLift[LIFTAUTO_SLOTS];
+static s32 g_LiftAutoSince[LIFTAUTO_SLOTS];
+
+static bool liftLevelgenAutoWait(struct liftobj *lift)
+{
+	s32 i, free = -1;
+
+	if (!levelgenIsStage(g_Vars.stagenum) || !levelgenLiftsAuto()) {
+		return false;
+	}
+	for (i = 0; i < LIFTAUTO_SLOTS; i++) {
+		if (g_LiftAutoLift[i] == lift) {
+			if (g_LiftAutoSince[i] > g_Vars.lvframe60) {
+				g_LiftAutoSince[i] = g_Vars.lvframe60;   /* (a lift of an earlier level at the same address) */
+			}
+			if (g_Vars.lvframe60 - g_LiftAutoSince[i] < LIFTAUTO_WAIT) {
+				return true;
+			}
+			g_LiftAutoLift[i] = NULL;   /* off it goes: the next stop's wait starts afresh */
+			return false;
+		}
+		if (free < 0 && g_LiftAutoLift[i] == NULL) {
+			free = i;
+		}
+	}
+	if (free >= 0) {
+		g_LiftAutoLift[free] = lift;
+		g_LiftAutoSince[free] = g_Vars.lvframe60;
+		return true;
+	}
+	return false;
+}
+
+static bool liftLevelgenStill(struct liftobj *lift)
+{
+	return lift->levelcur == lift->levelaim;
+}
+
+bool liftLevelgenInteract(void)
+{
+	struct prop *prop;
+	struct prop *self = g_Vars.currentplayer->prop;
+
+	if (!levelgenIsStage(g_Vars.stagenum) || !self || levelgenLiftsAuto()) {   /* (the pipeworks' go on their own) */
+		return false;
+	}
+	for (prop = g_Vars.activeprops; prop; prop = prop->next) {
+		struct liftobj *lift;
+		f32 dx, dz;
+
+		if (prop->type != PROPTYPE_OBJ || !prop->obj || prop->obj->type != OBJTYPE_LIFT) {
+			continue;
+		}
+		lift = (struct liftobj *) prop->obj;
+		if (!liftLevelgenStill(lift)) {
+			continue;
+		}
+		dx = self->pos.x - prop->pos.x;
+		dz = self->pos.z - prop->pos.z;
+		if (g_Vars.currentplayer->lift == prop) {
+			// riding it: on to its next stop (the stops go 0 1 2 1: up, then down)
+			s32 stop = lift->levelaim, k;
+
+			for (k = 0; k < 4; k++) {
+				stop = (stop + 1) % 4;
+				if (lift->pads[stop] >= 0) {
+					break;
+				}
+			}
+			if (stop != lift->levelaim) {
+				liftGoToStop(lift, stop);
+				return true;
+			}
+		} else if (dx * dx + dz * dz < 500.0f * 500.0f && (dx > 170.0f || dx < -170.0f || dz > 170.0f || dz < -170.0f)) {
+			// at the shaft's edge (not under it): call it to the stop nearest the player's feet
+			s32 s, best = -1;
+			f32 bestd = 120.0f;
+
+			for (s = 0; s < 4; s++) {
+				if (lift->pads[s] >= 0) {
+					struct coord c;
+					f32 d;
+
+					padGetCentre(lift->pads[s], &c);
+					// Generated pads sit at the centre of the car, above its deck.
+					d = c.y - LG_LIFT_CAR_HEIGHT * 0.5f - g_Vars.currentplayer->vv_manground;
+					d = d < 0.0f ? -d : d;
+					if (d < bestd) {
+						bestd = d;
+						best = s;
+					}
+				}
+			}
+			if (best >= 0) {
+				// (stop 3 is stop 1 again on the way down: either will do)
+				if (lift->pads[best] != lift->pads[lift->levelcur]) {
+					liftGoToStop(lift, best);
+				}
+				return true;
+			}
+		}
+	}
+	return false;
+}
+#else
+#define liftLevelgenHold(prop) false
+#define liftLevelgenAutoWait(lift) false
+#endif
+
 void liftTick(struct prop *prop)
 {
 	struct liftobj *lift = (struct liftobj *)prop->obj;
@@ -8620,6 +8953,15 @@ void liftTick(struct prop *prop)
 		// back down. At 60 FPS every tick is a whole 60th: as before.
 		if (g_Vars.lvupdate60 > 0)
 #endif
+		if (!door && liftLevelgenHold(prop)) {
+			// MOD: a levelgen lift (no doors) waits to be used (liftLevelgenInteract)
+		} else if (!door && liftLevelgenAutoWait(lift)) {
+			// MOD: a pipeworks platform waits a moment at the stop, then goes on
+		} else if (door && liftLevelgenHold(prop) && g_Vars.lvframe60 < 120 && doorIsClosed(door)) {
+			// MOD: a levelgen lift's door opens as the level starts, rather than
+			// the lift setting off for its next stop with its door shut
+			doorsRequestMode(door, DOORMODE_OPENING);
+		} else
 		if (!door || (doorIsClosed(door) && door->keyflags == 0)) {
 			// Find next stop
 			stop = lift->levelaim;
@@ -14358,6 +14700,10 @@ Gfx *objRender(struct prop *prop, Gfx *gdl, bool xlupass)
 			frac *= (TICKS(60.0f) - prop->timetoregen) * (PAL ? 0.019999999552965f : 0.016666667535901f);
 		}
 
+		if (modSpawnEditIsGhost(prop)) {
+			frac *= 0.65f; // the Spawn Customizer's placement preview
+		}
+
 		alpha = frac * 255.0f;
 
 		if (alpha <= 0) {
@@ -16390,7 +16736,7 @@ void func0f0859a0(struct prop *prop, struct shotdata *shotdata)
 		if (spd4 <= shotdata->distance) {
 			isnotglass = true;
 
-			if ((obj->flags & OBJFLAG_INVINCIBLE) == 0) {
+			{
 				if (obj->type == OBJTYPE_GLASS || obj->type == OBJTYPE_TINTEDGLASS) {
 					isnotglass = false;
 				} else if (obj->model->definition->skel == &g_SkelWindowedDoor
@@ -16406,7 +16752,7 @@ void func0f0859a0(struct prop *prop, struct shotdata *shotdata)
 			hitCreate(shotdata, prop, spd4, hitpart,
 					node1, &hitthing1, spe4, node2,
 					model, isnotglass && shotdata->gset.weaponnum != WEAPON_FARSIGHT,
-					(obj->flags2 & OBJFLAG2_BULLETPROOF)
+					isnotglass && (obj->flags2 & OBJFLAG2_BULLETPROOF)
 						&& shotdata->gset.weaponnum != WEAPON_DY357MAGNUM
 						&& shotdata->gset.weaponnum != WEAPON_FARSIGHT,
 					&sp7c, &sp70);
@@ -17190,6 +17536,7 @@ struct nameinfo var8006aa94pf[] = {
 	{ WEAPON_SHIELDTECHITEM,   L_GUN_240, 0,         { DETERMINER_A,     DETERMINER_A,     DETERMINER_SOME5, 0,                0                } },
 	{ WEAPON_NECKLACE,         L_GUN_230, 0,         { DETERMINER_A,     DETERMINER_A,     DETERMINER_A,     0,                0                } },
 	{ WEAPON_SUICIDEPILL,      L_GUN_072, 0,         { DETERMINER_A,     DETERMINER_A,     DETERMINER_AN,    DETERMINER_AN,    DETERMINER_AN    } },
+	{ WEAPON_TARGETLOCATOR,    L_GUN_111, 0,         { DETERMINER_A,     DETERMINER_A,     DETERMINER_A,     DETERMINER_A,     DETERMINER_A     } },
 	{ WEAPON_ROCKET,           L_GUN_044, 0,         { DETERMINER_A,     DETERMINER_A,     DETERMINER_AN,    DETERMINER_A,     DETERMINER_A     } },
 	{ WEAPON_HOMINGROCKET,     L_GUN_045, 0,         { DETERMINER_A,     DETERMINER_A,     DETERMINER_AN,    DETERMINER_A,     DETERMINER_A     } },
 	{ WEAPON_GRENADEROUND,     L_GUN_046, 0,         { DETERMINER_A,     DETERMINER_A,     DETERMINER_AN,    DETERMINER_A,     DETERMINER_AN    } },
@@ -17665,7 +18012,7 @@ void currentPlayerQueuePickupAmmoHudmsg(s32 ammotype, s32 pickupqty)
 	char buffer[100] = "";
 
 	ammotypeGetPickupMessage(buffer, ammotype, pickupqty);
-	hudmsgCreateWithFlags(buffer, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE);
+	hudmsgCreateWithFlags(buffer, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_PICKUP);
 }
 
 void ammoHandlePickup(s32 ammotype, s32 quantity, bool withsound, bool withhudmsg)
@@ -17749,6 +18096,12 @@ s32 weaponGetPickupAmmoQty(struct weaponobj *weapon)
 		return 20;
 	}
 
+#ifndef PLATFORM_N64
+	if (modRandomIsCassandraGun(weapon)) {
+		return modRandomIsOn() && weaponHost(weapon->weaponnum) == WEAPON_REAPER ? 200 : 100;
+	}
+#endif
+
 	ammotype = bgunGetAmmoTypeForWeapon(weapon->weaponnum, 0);
 
 	if (weapon->weaponnum == WEAPON_COMBATKNIFE || weapon->weaponnum == WEAPON_BOLT) {
@@ -17795,6 +18148,20 @@ s32 weaponGetPickupAmmoQty(struct weaponobj *weapon)
 		if (qty > 1) {
 			qty *= g_AmmoQuantityScale;
 		}
+
+#ifndef PLATFORM_N64
+		if (modRandomIsOn()) {
+			const s32 host = weaponHost(weapon->weaponnum);
+
+			if (host == WEAPON_REAPER) {
+				qty = 200; // a Reaper in Perfect Random always comes with 200
+			} else if (host == WEAPON_SHOTGUN) {
+				qty = 20; // a shotgun in Perfect Random always comes with 20 rounds
+			} else if (host == WEAPON_AR34 || host == WEAPON_KF7SPECIAL || host == WEAPON_KL01313) {
+				qty *= 2; // an assault rifle drops twice the rounds
+			}
+		}
+#endif
 	}
 
 	return qty;
@@ -17913,7 +18280,7 @@ void currentPlayerQueuePickupWeaponHudmsg(u32 weaponnum, bool dual)
 	}
 
 	weaponGetPickupText(buffer, weaponnum, dual);
-	hudmsgCreateWithFlags(buffer, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_ALLOWDUPES);
+	hudmsgCreateWithFlags(buffer, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_PICKUP | HUDMSGFLAG_ALLOWDUPES);
 }
 
 const char var7f1aa140[] = "autodoorcanclose:      blocking door\n\n";
@@ -17948,7 +18315,7 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 				text = langGet(L_PROPOBJ_040); // "Picked up a key."
 			}
 
-			hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_ALLOWDUPES);
+			hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_PICKUP | HUDMSGFLAG_ALLOWDUPES);
 		}
 
 		result = TICKOP_GIVETOPLAYER;
@@ -18028,7 +18395,7 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 					char *text = invGetPickupTextByObj(obj);
 
 					if (text) {
-						hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_ALLOWDUPES);
+						hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_PICKUP | HUDMSGFLAG_ALLOWDUPES);
 					} else {
 						currentPlayerQueuePickupWeaponHudmsg(weapon->weaponnum, count == 2);
 					}
@@ -18059,7 +18426,7 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 
 						if (text) {
 							sp70 = true;
-							hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_ALLOWDUPES);
+							hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_PICKUP | HUDMSGFLAG_ALLOWDUPES);
 						} else {
 							if (sp70) {
 								currentPlayerQueuePickupWeaponHudmsg(weapon->weaponnum, count == 2);
@@ -18120,10 +18487,6 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 		{
 			playerSetShieldFrac(((struct shieldobj *) prop->obj)->amount);
 
-			if (!g_Vars.in_cutscene) {
-				sndStart(var80095200, SFX_PICKUP_SHIELD, NULL, -1, -1, -1, -1, -1);
-			}
-
 			if (showhudmsg) {
 				char *text = invGetPickupTextByObj(obj);
 
@@ -18137,7 +18500,7 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 					}
 				}
 
-				hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE);
+				hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_PICKUP);
 			}
 
 			result = TICKOP_FREE;
@@ -18168,7 +18531,7 @@ s32 propPickupByPlayer(struct prop *prop, bool showhudmsg)
 				text = langGet(L_PROPOBJ_043); // "Picked up something."
 			}
 
-			hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_ALLOWDUPES);
+			hudmsgCreateWithFlags(text, HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_PICKUP | HUDMSGFLAG_ALLOWDUPES);
 		}
 
 		result = TICKOP_GIVETOPLAYER;
@@ -18560,6 +18923,8 @@ void hatLoadAndApplyToChr(struct hatobj *hat, struct chrdata *chr)
 
 void hatAssignToChr(struct hatobj *hat, struct chrdata *chr)
 {
+	if (chr && chr->prop && chr->prop->type == PROPTYPE_CHR
+			&& !(chr->team & (TEAM_ALLY | TEAM_NONCOMBAT))) return;
 	hatLoadAndApplyToChr(hat, chr);
 }
 
@@ -18569,6 +18934,8 @@ struct prop *hatCreateForChr(struct chrdata *chr, s32 modelnum, u32 flags)
 	struct prop *prop;
 	struct model *model;
 	struct hatobj *obj;
+	if (chr && chr->prop && chr->prop->type == PROPTYPE_CHR
+			&& !(chr->team & (TEAM_ALLY | TEAM_NONCOMBAT))) return NULL;
 
 	setupLoadModeldef(modelnum);
 	modeldef = g_ModelStates[modelnum].modeldef;
@@ -19067,11 +19434,24 @@ struct prop *func0f08ae0c(struct weaponobj *weapon, struct modeldef *modeldef)
 	return prop;
 }
 
+// Perfect Random: a left-handed (akimbo) weapon is only equipped when the
+// randomizer hands it out through chrGiveWeapon*(); stage-assigned ones are dropped.
+static bool g_ModGrantingWeapon = false;
+
 bool chrEquipWeapon(struct weaponobj *weapon, struct chrdata *chr)
 {
 	u32 stack1;
 	s32 handnum = (weapon->base.flags & OBJFLAG_WEAPON_LEFTHANDED) ? HAND_LEFT : HAND_RIGHT;
 	u32 stack2[2];
+	if (chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER
+			&& !modRandomNpcWeaponAllowed(chr->chrnum, weapon->weaponnum)) {
+		return false;
+	}
+
+	if (handnum == HAND_LEFT && !g_ModGrantingWeapon && modRandomIsOn()
+			&& chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER) {
+		return false;
+	}
 
 	if (weapon->base.prop && weapon->base.model) {
 		if (g_Vars.mplayerisrunning) {
@@ -19138,12 +19518,27 @@ struct prop *func0f08b108(struct weaponobj *weapon, struct chrdata *chr, struct 
 {
 	prop = func0f08adc8(weapon, modeldef, prop, model);
 
+	// Perfect Random: say why a guard ended up without the gun it was given
+	if (modRandomIsOn() && chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER && (!prop || !weapon->base.model)) {
+		sysLogPrintf(0, "randomizer: NO WEAPON chr %d weapon %d model %d - %s", chr->chrnum, weapon->weaponnum,
+				weapon->base.modelnum, !prop ? "no prop (pool full?)" : "no model (pool full?)");
+	}
+
 	if (prop && weapon->base.model) {
 		f32 scale = weapon->base.extrascale * (1.0f / 256.0f);
 
 		modelSetScale(weapon->base.model, weapon->base.model->scale * scale);
 
 		if (!chrEquipWeapon(weapon, chr)) {
+			if (modRandomIsOn() && chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER) {
+				sysLogPrintf(0, "randomizer: NO WEAPON chr %d weapon %d (host %d) hand %s - refused (allowed %d, hand taken %d, model %d)",
+						chr->chrnum, weapon->weaponnum, weaponHost(weapon->weaponnum),
+						(weapon->base.flags & OBJFLAG_WEAPON_LEFTHANDED) ? "left" : "right",
+						modRandomNpcWeaponAllowed(chr->chrnum, weapon->weaponnum),
+						chr->weapons_held[(weapon->base.flags & OBJFLAG_WEAPON_LEFTHANDED) ? HAND_LEFT : HAND_RIGHT] != NULL,
+						chr->model != NULL);
+			}
+
 			propFree(prop);
 			prop = NULL;
 			weapon->base.prop = NULL;
@@ -19460,6 +19855,25 @@ struct prop *weaponCreateForChr(struct chrdata *chr, s32 modelnum, s32 weaponnum
 {
 	struct prop *prop;
 	struct model *model;
+#ifndef PLATFORM_N64
+	const bool allowNpcWeaponOverride = chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER
+		&& !(chr->hidden2 & CHRH2FLAG_ASSASSINCLOAK);
+	if (allowNpcWeaponOverride && !(flags & OBJFLAG_WEAPON_LEFTHANDED)
+			&& modRandomNpcAssaultRifle(chr->chrnum, &weaponnum, &modelnum)) {
+		modeldef = NULL;
+	}
+
+	// debug: All Shotguns - every gun a chr is given is a shotgun, whatever else was rolled
+	if (allowNpcWeaponOverride && modRandomDebugShotgun(&weaponnum, &modelnum)) {
+		modeldef = NULL;
+	} else
+#endif
+
+	if (chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER
+			&& !modRandomNpcWeaponAllowed(chr->chrnum, weaponnum)) {
+		modRandomFallbackGun(chr->chrnum, &weaponnum, &modelnum);
+		modeldef = NULL;
+	}
 
 	if (modeldef == NULL) {
 		setupLoadModeldef(modelnum);
@@ -19547,12 +19961,20 @@ struct prop *weaponCreateForChr(struct chrdata *chr, s32 modelnum, s32 weaponnum
 
 struct prop *chrGiveWeapon(struct chrdata *chr, s32 model, s32 weaponnum, u32 flags)
 {
-	return weaponCreateForChr(chr, model, weaponnum, flags, NULL, NULL);
+	struct prop *prop;
+	g_ModGrantingWeapon = true;
+	prop = weaponCreateForChr(chr, model, weaponnum, flags, NULL, NULL);
+	g_ModGrantingWeapon = false;
+	return prop;
 }
 
 struct prop *chrGiveWeaponWithAutoModel(struct chrdata *chr, s32 weaponnum, u32 flags)
 {
-	return weaponCreateForChr(chr, playermgrGetModelOfWeapon(weaponnum), weaponnum, flags, NULL, NULL);
+	struct prop *prop;
+	g_ModGrantingWeapon = true;
+	prop = weaponCreateForChr(chr, playermgrGetModelOfWeapon(weaponnum), weaponnum, flags, NULL, NULL);
+	g_ModGrantingWeapon = false;
+	return prop;
 }
 
 s32 weaponTestForPickup(struct prop *prop)
@@ -19637,6 +20059,8 @@ bool doorIsUnlocked(struct prop *playerprop, struct prop *doorprop)
 {
 	struct doorobj *door = doorprop->door;
 	bool canopen = false;
+	if (modAreMissionDoorsUnlocked()
+			&& (door->base.hidden & OBJHFLAG_LIFTDOOR) == 0) return true;
 
 	if (door->keyflags == 0) {
 		canopen = true;
@@ -20182,6 +20606,12 @@ void doorPlayOpeningSound(s32 soundtype, struct prop *prop)
 
 	psStopSound(prop, PSTYPE_DOOR, 0xffff);
 
+#ifndef PLATFORM_N64
+	if (geSfxDoor(GESFX_DOOR_OPENING, soundtype, prop)) {
+		return;
+	}
+#endif
+
 	if (g_Vars.in_cutscene
 			&& (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_DOOR)
 			&& (prop->obj->flags3 & OBJFLAG3_AUTOCUTSCENESOUNDS) == 0) {
@@ -20259,6 +20689,12 @@ void doorPlayClosingSound(s32 soundtype, struct prop *prop)
 
 	psStopSound(prop, PSTYPE_DOOR, 0xffff);
 
+#ifndef PLATFORM_N64
+	if (geSfxDoor(GESFX_DOOR_CLOSING, soundtype, prop)) {
+		return;
+	}
+#endif
+
 	if (g_Vars.in_cutscene
 			&& (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_DOOR)
 			&& (prop->obj->flags3 & OBJFLAG3_AUTOCUTSCENESOUNDS) == 0) {
@@ -20318,6 +20754,12 @@ void doorPlayOpenedSound(s32 soundtype, struct prop *prop)
 
 	psStopSound(prop, PSTYPE_DOOR, 0xffff);
 
+#ifndef PLATFORM_N64
+	if (geSfxDoor(GESFX_DOOR_OPENED, soundtype, prop)) {
+		return;
+	}
+#endif
+
 	if (g_Vars.in_cutscene
 			&& (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_DOOR)
 			&& (prop->obj->flags3 & OBJFLAG3_AUTOCUTSCENESOUNDS) == 0) {
@@ -20370,6 +20812,12 @@ void doorPlayClosedSound(s32 soundtype, struct prop *prop)
 	s32 sound = 0;
 
 	psStopSound(prop, PSTYPE_DOOR, 0xffff);
+
+#ifndef PLATFORM_N64
+	if (geSfxDoor(GESFX_DOOR_CLOSED, soundtype, prop)) {
+		return;
+	}
+#endif
 
 	if (g_Vars.in_cutscene
 			&& (prop->type == PROPTYPE_OBJ || prop->type == PROPTYPE_DOOR)
@@ -21520,7 +21968,7 @@ bool propdoorInteract(struct prop *doorprop)
 			}
 
 			if (override && override->pickuptext) {
-				hudmsgCreateWithFlags(langGet(override->pickuptext), HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE);
+				hudmsgCreateWithFlags(langGet(override->pickuptext), HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_PICKUP);
 			} else if (intraining) {
 				hudmsgCreateWithFlags(langGet(L_DISH_080), HUDMSGTYPE_DEFAULT, HUDMSGFLAG_ONLYIFALIVE); // "Cannot exit while training is in progress."
 			} else {
@@ -21850,6 +22298,10 @@ void alarmTick(void)
 		alarmDeactivate();
 	}
 
+#ifndef PLATFORM_N64
+	modAlarmTick();
+#endif
+
 	gasTick();
 	countdownTimerTick();
 	chrsTriggerProxies();
@@ -21882,7 +22334,7 @@ void currentPlayerDropAllItems(void)
 	weaponDeleteFromChr(chr, HAND_RIGHT);
 	weaponDeleteFromChr(chr, HAND_LEFT);
 
-	for (i = WEAPON_UNARMED; i <= WEAPON_SUICIDEPILL; i++) {
+	for (i = WEAPON_UNARMED; i <= WEAPON_TARGETLOCATOR; i++) {
 		if (playermgrGetModelOfWeapon(i) >= 0 && invHasSingleWeaponExcAllGuns(i)) {
 			if (!weaponHasFlag(i, WEAPONFLAG_UNDROPPABLE)
 					|| (g_Vars.normmplayerisrunning

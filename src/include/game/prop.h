@@ -11,6 +11,9 @@ void propsTick(void);
 void propsStop(void);
 
 void propsSort(void);
+extern s32 g_PropsOnscreenCap; // MOD: bounds fix, see prop.c
+void propsSortList(struct prop **list, s32 count);
+s32 propsCollectOnscreen(struct prop *head, struct prop *end, struct prop **list, s32 cap);
 void propEnable(struct prop *prop);
 void propDisable(struct prop *prop);
 struct prop *propAllocate(void);

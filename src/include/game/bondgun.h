@@ -148,6 +148,12 @@ void bgunSetTriggerOn(s32 handnum, bool on);
 s32 bgunConsiderToggleGunFunction(s32 usedowntime, bool trigpressed, bool fromactivemenu, bool fromdedicatedbutton);
 void bgun0f0a8c50(void);
 bool bgunIsUsingSecondaryFunction(void);
+#ifndef PLATFORM_N64
+bool bgunQuickRemotePlaced(void);
+void bgunQuickReset(void);
+void bgunQuickCancel(void);
+void bgunQuickTick(bool allow, u32 buttons, u32 pressed);
+#endif
 void bgunTickGameplay(bool triggeron);
 void bgunSetPassiveMode(bool enable);
 void bgunSetAimType(u32 aimtype);
@@ -157,6 +163,7 @@ void bgun0f0a9494(u32 operation);
 void bgun0f0a94d0(u32 operation, struct coord *pos, struct coord *rot);
 void bgunSetGunAmmoVisible(u32 reason, bool enable);
 void bgunSetAmmoQuantity(s32 ammotype, s32 quantity);
+void bgunModAmmoReset(void);
 s32 bgunGetReservedAmmoCount(s32 type);
 s32 bgunGetAmmoCount(s32 ammotype);
 s32 bgunGetCapacityByAmmotype(s32 ammotype);

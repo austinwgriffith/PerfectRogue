@@ -396,7 +396,8 @@ extern struct skeleton g_SkelSkedar;
 extern struct skeleton g_SkelDrCaroll;
 extern struct skeleton g_Skel22;
 extern struct skeleton g_SkelRobot;
-extern struct headorbody g_HeadsAndBodies[152];
+#define NUM_HEADSANDBODIES 576 // 152 stock rows, then Perfect Random's head bank from MODHEADS_FIRST (modheads.h)
+extern struct headorbody g_HeadsAndBodies[NUM_HEADSANDBODIES];
 extern struct hatposition var8007dae4[1][6];
 extern f32 g_SkyCloudOffset;
 extern f32 g_SkyWindSpeed;
@@ -442,7 +443,7 @@ extern struct drawslot *g_BgSpecialDrawSlot;
 extern u16 g_BgFrameCount;
 extern s32 g_BgNumPortalCameraCacheItems;
 extern f32 var8007fcb4;
-extern struct stagetableentry g_Stages[61];
+extern struct stagetableentry g_Stages[61 + 32];
 extern s32 g_RoomMtxNumSlots;
 extern u32 g_GfxNumSwaps;
 extern s32 g_NumReasonsToEndMpMatch;

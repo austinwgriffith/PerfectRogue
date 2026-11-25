@@ -1,6 +1,9 @@
 #include <ultra64.h>
 #include "constants.h"
 #include "constants.h"
+#include "game/modrun.h"
+#include "game/modrandom.h"
+#include "game/modspawnedit.h"
 #include "game/bondmove.h"
 #include "game/cheats.h"
 #include "game/inv.h"
@@ -148,7 +151,10 @@ void playerReset(void)
 	g_PlayersWithControl[1] = true;
 	g_PlayersWithControl[2] = true;
 	g_PlayersWithControl[3] = true;
-	g_PlayerInvincible = false;
+	g_PlayerInvincible = modSpawnEditIsOn();
+	if (g_PlayerInvincible) {
+		g_Vars.currentplayer->invincible = true;
+	}
 
 	playerSetTickMode(TICKMODE_GE_FADEIN);
 
@@ -367,6 +373,14 @@ void playerReset(void)
 		bgunSetAmmoQuantity(AMMOTYPE_SMG, 200);
 	}
 
+#ifndef PLATFORM_N64
+	// Perfect Random: a single Combat Maps arena mission has no intro gun and
+	// no weapon pickups, so it is armed here, before the hands are chosen
+	if (!hasdefaultweapon && modRunGiveArenaKit()) {
+		hasdefaultweapon = true;
+	}
+#endif
+
 	if (!hasdefaultweapon) {
 		g_DefaultWeapons[HAND_RIGHT] = WEAPON_UNARMED;
 	}
@@ -399,7 +413,9 @@ void playerReset(void)
 		playerInitEyespy();
 	}
 
-	if (g_NumSpawnPoints > 0) {
+	if (modRandomTakeSpawn(&pos, rooms, &turnanglerad)) {
+		// Perfect Random places the player before the first gameplay tick.
+	} else if (g_NumSpawnPoints > 0) {
 		if (g_Vars.coopplayernum >= 0) {
 			turnanglerad = M_BADTAU - scenarioChooseSpawnLocation(30, &pos, rooms, g_Vars.currentplayer->prop);
 		} else if (g_Vars.antiplayernum >= 0) {

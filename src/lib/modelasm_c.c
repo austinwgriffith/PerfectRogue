@@ -451,11 +451,18 @@ bool modelasm00018680(struct modelrenderdata *renderdata, struct model *model)
 			}
 			break;
 		case MODELNODETYPE_CHRINFO:
+#ifndef PLATFORM_N64
+			// MOD: a converted model can carry a character-info node with no
+			// data behind it (crash playing Runway); there is nothing to pose
+			if (model && node->rodata == NULL) {
+				break;
+			}
+#endif
 			if (model) {
 				t1 = node->rodata->chrinfo.animpart;
 
 #ifdef AVOID_UB
-				if (anim->animnum)
+				if (anim && anim->animnum) // MOD: an object's model can have a character node and no anim
 #else
 				if (anim)
 #endif

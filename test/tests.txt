@@ -1,0 +1,32 @@
+# One regression test per line:  name | arguments given to pd.x86_64.exe
+# Each run must log "SELFTEST RESULT ... passed N failed M" and exit 0 on success
+# (see src/game/modspawnedit.c, "Self-test", for the pattern). Add a line here
+# for every new feature test.
+spawnedit-combat-map | --selftest-spawnedit --selftest-stage 0x32
+spawnedit-goldeneye-dam | --selftest-spawnedit --selftest-stage 0x51
+spawnedit-goldeneye-streets | --selftest-spawnedit --selftest-stage 0x03
+spawnedit-pd-defection | --selftest-spawnedit --selftest-stage 0x30
+spawnconfig-combat-map | --selftest-spawnconfig --selftest-stage 0x32
+spawnconfig-goldeneye-dam | --selftest-spawnconfig --selftest-stage 0x51
+spawnconfig-pd-defection | --selftest-spawnconfig --selftest-stage 0x30
+bounds-title-level | --selftest-bounds
+bounds-pd-defection | --selftest-bounds --boot-stage 0x30
+bounds-combat-map | --selftest-bounds --boot-stage 0x32
+bounds-goldeneye-dam | --selftest-bounds --boot-stage 0x51
+levelgen-layout | --selftest-levelgen --levelgen-seeds 200
+levelgen-files | --selftest-levelgen-files
+levelgen-load | --selftest-levelgen-load
+levelgen-map | --selftest-levelgen-map
+levelgen-tour | --levelgen-tour 100 --levelgen-size 0 --levelgen-layout 0
+levelgen-tour-mezz | --levelgen-tour 104 --levelgen-size 1 --levelgen-layout 0
+levelgen-tour-lab | --levelgen-tour 105 --levelgen-size 1 --levelgen-layout 1
+levelgen-tour-street | --levelgen-tour 105 --levelgen-size 1 --levelgen-layout 2
+levelgen-tour-ravine | --levelgen-tour 5 --levelgen-size 1 --levelgen-layout 3
+levelgen-tour-rooftop | --levelgen-tour 3 --levelgen-size 1 --levelgen-layout 4
+levelgen-tour-docks | --levelgen-tour 21 --levelgen-size 1 --levelgen-layout 6
+levelgen-tour-backwoods | --levelgen-tour 21 --levelgen-size 1 --levelgen-layout 7
+levelgen-tour-penthouse | --levelgen-tour 23 --levelgen-size 1 --levelgen-layout 8
+levelgen-tour-site | --levelgen-tour 23 --levelgen-size 1 --levelgen-layout 9
+levelgen-tour-mall | --levelgen-tour 41 --levelgen-size 0 --levelgen-layout 11
+levelgen-tour-pier | --levelgen-tour 17 --levelgen-size 1 --levelgen-layout 13
+levelgen-tour-trail | --levelgen-tour 17 --levelgen-size 1 --levelgen-layout 14

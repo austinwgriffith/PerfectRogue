@@ -41,7 +41,7 @@ void gfx_init(const struct GfxInitSettings *settings);
 void gfx_destroy(void);
 struct GfxRenderingAPI* gfx_get_current_rendering_api(void);
 void gfx_start_frame(void);
-void gfx_run(Gfx* commands);
+bool gfx_run(Gfx* commands, Gfx* overlay);
 void gfx_end_frame(void);
 void gfx_set_target_fps(int);
 void gfx_set_texture_filter(enum FilteringMode mode);

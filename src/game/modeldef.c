@@ -1,5 +1,7 @@
+#include "game/modheads.h"
 #include <ultra64.h>
 #include "constants.h"
+#include "prcompat.h"
 #include "game/chraction.h"
 #include "game/ceil.h"
 #include "game/bondgun.h"
@@ -23,6 +25,7 @@
 #include "lib/model.h"
 #include "data.h"
 #include "types.h"
+#include "gelevels.h"
 
 struct skeleton *g_Skeletons[] = {
 	&g_SkelChr,
@@ -109,6 +112,25 @@ struct skeleton *g_Skeletons[] = {
 #endif
 };
 
+/**
+ * A head from Perfect Random's head bank loads as its base head's model with
+ * textures of its own (modheads.c): the bank is asked for each texture while
+ * the load runs, and the pool keys them apart from the stock head's.
+ */
+struct modeldef *modeldefLoadHead(s32 headnum)
+{
+	struct modeldef *modeldef;
+	const s32 previous = modHeadsBeginLoad(headnum);
+
+	modeldef = modeldefLoadToNew(g_HeadsAndBodies[headnum].filenum);
+	if (modHeadsSlotOf(headnum) >= 0) {
+		modHeadsLogLoad(headnum);
+	}
+	modHeadsEndLoad(previous);
+
+	return modeldef;
+}
+
 void modeldef0f1a7560(struct modeldef *modeldef, u16 filenum, u32 arg2, struct modeldef *modeldef2, struct texpool *texpool, bool arg5)
 {
 	s32 allocsize;
@@ -125,6 +147,12 @@ void modeldef0f1a7560(struct modeldef *modeldef, u16 filenum, u32 arg2, struct m
 	allocsize = fileGetAllocationSize(filenum);
 	loadedsize = fileGetLoadedSize(filenum);
 	node = NULL;
+
+#ifndef PLATFORM_N64
+	// MOD: GoldenEye levels - GoldenEye's prop models draw with its textures,
+	// every other model with Perfect Dark's, whatever stage is loading
+	const s32 prevgetex = gelevelsTexSet(gelevelsFileIsGe(filenum));
+#endif
 
 	modelIterateDisplayLists(modeldef, &node, (Gfx **)&gdl);
 
@@ -165,6 +193,10 @@ void modeldef0f1a7560(struct modeldef *modeldef, u16 filenum, u32 arg2, struct m
 
 		fileSetSize(filenum, modeldef, (((uintptr_t)modeldef + (UNSEGADDR(s5) & 0xffffff)) - (uintptr_t)modeldef + 0xf) & ~0xf, arg5);
 	}
+
+#ifndef PLATFORM_N64
+	gelevelsTexSet(prevgetex);
+#endif
 }
 
 void modelPromoteTypeToPointer(struct modeldef *modeldef)
@@ -195,7 +227,17 @@ struct modeldef *modeldefLoad(u16 fileid, u8 *dst, s32 size, struct texpool *arg
 
 	modelPromoteTypeToPointer(modeldef);
 	modelPromoteOffsetsToPointers(modeldef, 0x5000000, (uintptr_t) modeldef);
+
+#ifndef PLATFORM_N64
+	// The XBLA meshes, now that the pointers are real: the tree is promoted
+	// and the file id is still in hand, which is what it takes to match our
+	// nodes
+	// against the release's copy of the same model
+	if (modHeadsLoadingSlot() < 0) xblaMeshRegisterModel(modeldef, fileid);
+#endif
+
 	modeldef0f1a7560(modeldef, fileid, 0x5000000, modeldef, arg3, dst == NULL);
+
 
 	return modeldef;
 }

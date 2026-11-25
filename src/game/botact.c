@@ -1,5 +1,6 @@
 #include <ultra64.h>
 #include "constants.h"
+#include "prcompat.h"
 #include "game/chraction.h"
 #include "game/debug.h"
 #include "game/chr.h"
@@ -21,7 +22,7 @@
 
 s32 botactGetAmmoTypeByFunction(s32 weaponnum, s32 funcnum)
 {
-	if (weaponnum >= WEAPON_FALCON2 && weaponnum <= WEAPON_SUICIDEPILL) {
+	if (weaponnum >= WEAPON_FALCON2 && weaponnum <= WEAPON_TARGETLOCATOR) {
 		struct inventory_ammo *ammo = weaponGetAmmoByFunction(weaponnum, funcnum);
 
 		if (ammo) {
@@ -34,7 +35,7 @@ s32 botactGetAmmoTypeByFunction(s32 weaponnum, s32 funcnum)
 
 s32 botactGetClipCapacityByFunction(s32 weaponnum, u32 funcnum)
 {
-	if (weaponnum >= WEAPON_FALCON2 && weaponnum <= WEAPON_SUICIDEPILL) {
+	if (weaponnum >= WEAPON_FALCON2 && weaponnum <= WEAPON_TARGETLOCATOR) {
 		struct inventory_ammo *ammo = weaponGetAmmoByFunction(weaponnum, funcnum);
 
 		if (ammo) {
@@ -267,6 +268,7 @@ bool botactShootFarsight(struct chrdata *chr, s32 arg1, struct coord *vector, st
 					}
 
 					chrEmitSparks(oppchr, oppprop, hitpart, &oppprop->pos, vector, chr);
+					chrShotBlood(oppchr, oppprop, arg3, &oppprop->pos, vector, chr); // MOD: gore
 					func0f0341dc(oppchr, damage, vector, &gset, chr->prop, HITPART_GENERAL, oppprop, node, model, side, 0);
 				}
 			}

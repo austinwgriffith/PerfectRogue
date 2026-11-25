@@ -19,6 +19,7 @@
 #include "game/camera.h"
 #include "game/chr.h"
 #include "game/propobj.h"
+#include "game/modspawnedit.h"
 #include "platform.h"
 #include "config.h"
 #include "system.h"
@@ -59,6 +60,7 @@ static s32 bodyViewOn(struct player *player)
 static bool bodyViewAllowed(struct player *player)
 {
 	return player && player->prop && bodyViewOn(player)
+		&& !modSpawnEditIsOn() // the Spawn Customizer flies free: no body under the camera
 		&& !player->isdead
 		&& player->cameramode == CAMERAMODE_DEFAULT
 		&& !g_Vars.in_cutscene

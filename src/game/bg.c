@@ -1,4 +1,6 @@
 #include <ultra64.h>
+#include "game/modrun.h"
+#include "game/modoptions.h"
 #include "constants.h"
 #include "game/debug.h"
 #include "game/dlights.h"
@@ -44,11 +46,17 @@
 #include "gbiex.h"
 #include "types.h"
 #ifndef PLATFORM_N64
+#include <string.h>
 #include "math.h" // MOD: gun blocks glares - by joshuarwood (perfect_dark PR #714)
+#include "game/aztecladder.h"
 #include "preprocess.h"
 #include "system.h"
 #include "video.h"
 #include "platform.h"
+#include "gelevels.h"
+#ifndef PLATFORM_N64
+s32 levelgenIsStage(s32 stagenum);         // levelgenstage.c
+#endif
 #endif
 
 #define BGCMD_END                               0x00
@@ -87,7 +95,19 @@
 #define VTXBATCHTYPE_OPA 0x01
 #define VTXBATCHTYPE_XLU 0x02
 
-struct drawslot g_BgDrawSlots[61];
+// MOD (2026-11-16): the rooms drawn in one frame. The game drew at most 60 and
+// overwrote the 60th with every room past it, which the stock levels never
+// reach; a generated level's open ground is a hundred rooms and more, all seen
+// at once, and the far ones (and some near ones, drawn in the overwritten slot)
+// went missing. The last slot is the special one (the whole screen).
+#ifdef PLATFORM_N64
+#define BG_NUMDRAWSLOTS 60
+#else
+#define BG_NUMDRAWSLOTS 1000
+#endif
+struct drawslot g_BgDrawSlots[BG_NUMDRAWSLOTS + 1];
+RoomNum *g_BgRoomNumsByProp = NULL; // MOD: bounds fix, see bg.h
+s32 g_BgRoomNumsByPropLen = 0;
 u8 *g_BgPrimaryData;
 u32 var800a4920;
 u32 g_BgSection3;
@@ -113,6 +133,9 @@ s16 g_BgMaxDrawOrder;
 struct drawslotpointer *g_BgDrawSlotsByRoom;
 struct portalcamcacheitem *g_PortalCameraCache;
 struct bgsnake g_BgSnake;
+#ifndef PLATFORM_N64
+s32 g_BgSnakeOverflows = 0;
+#endif
 
 s32 g_StageIndex = 1;
 uintptr_t var8007fc04 = 0;
@@ -128,7 +151,7 @@ s32 g_NumRoomsWithGlares = 0;
 u32 var8007fc18 = 0x01000100;
 u32 var8007fc1c = 0;
 s32 g_CamRoom = 1;
-struct drawslot *g_BgSpecialDrawSlot = &g_BgDrawSlots[60];
+struct drawslot *g_BgSpecialDrawSlot = &g_BgDrawSlots[BG_NUMDRAWSLOTS];
 s32 g_BgLoadCandidateTimer240 = 0;
 s32 g_BgNumDrawSlots = 0;
 s32 g_BgNumAttemptedDrawSlots = 0;
@@ -194,10 +217,10 @@ void bgSetRoomOnscreen(s32 roomnum, s32 draworder, struct screenbox *box)
 #endif
 
 		if (g_Rooms[roomnum].flags & ROOMFLAG_BBOXHACK) {
-			box->xmin = g_BgDrawSlots[60].box.xmin;
-			box->ymin = g_BgDrawSlots[60].box.ymin;
-			box->xmax = g_BgDrawSlots[60].box.xmax;
-			box->ymax = g_BgDrawSlots[60].box.ymax;
+			box->xmin = g_BgDrawSlots[BG_NUMDRAWSLOTS].box.xmin;
+			box->ymin = g_BgDrawSlots[BG_NUMDRAWSLOTS].box.ymin;
+			box->xmax = g_BgDrawSlots[BG_NUMDRAWSLOTS].box.xmax;
+			box->ymax = g_BgDrawSlots[BG_NUMDRAWSLOTS].box.ymax;
 		}
 
 		if (g_BgFrameCount == g_BgDrawSlotsByRoom[roomnum].updatedframe) {
@@ -219,8 +242,8 @@ void bgSetRoomOnscreen(s32 roomnum, s32 draworder, struct screenbox *box)
 		} else {
 			index = g_BgNumDrawSlots;
 
-			if (index > 59) {
-				index = 59;
+			if (index > BG_NUMDRAWSLOTS - 1) {
+				index = BG_NUMDRAWSLOTS - 1;
 			}
 
 			g_BgDrawSlots[index].roomnum = roomnum;
@@ -244,7 +267,7 @@ void bgSetRoomOnscreen(s32 roomnum, s32 draworder, struct screenbox *box)
 
 			g_BgNumAttemptedDrawSlots++;
 
-			if (g_BgNumAttemptedDrawSlots < 60) {
+			if (g_BgNumAttemptedDrawSlots < BG_NUMDRAWSLOTS) {
 				g_BgNumDrawSlots = g_BgNumAttemptedDrawSlots;
 			}
 
@@ -268,7 +291,7 @@ void bgGetRoomBrightnessRange(s32 roomnum, u8 *min, u8 *max)
 
 struct drawslot *bgGetRoomDrawSlot(s32 roomnum)
 {
-	s32 index = 60;
+	s32 index = BG_NUMDRAWSLOTS;
 
 	if (g_BgFrameCount == g_BgDrawSlotsByRoom[roomnum].updatedframe) {
 		index = g_BgDrawSlotsByRoom[roomnum].slotnum;
@@ -884,7 +907,7 @@ Gfx *bgRenderSceneInXray(Gfx *gdl)
 	RoomNum *room;
 	s16 i;
 	s32 j;
-	RoomNum roomnumsbyprop[200];
+	RoomNum *roomnumsbyprop = g_BgRoomNumsByProp; // MOD: bounds fix, was a 200-entry array
 	struct prop *prop;
 	struct prop **ptr;
 	s32 k;
@@ -974,21 +997,72 @@ Gfx *bgRenderSceneInXray(Gfx *gdl)
 	return gdl;
 }
 
+#ifndef PLATFORM_N64
+static Gfx *bgRenderAztecRavineLadder(Gfx *gdl)
+{
+	// Aztec's hangar ladder uses this repeating cutout texture (room 66).
+	enum {
+		LADDER_TEXTURE = 0x09ab,
+		LADDER_HALF_WIDTH = 31,
+		LADDER_TEXTURE_WIDTH = 2048,
+		LADDER_TEXTURE_HEIGHT = 24402 * (AZTEC_LADDER_LIP - AZTEC_LADDER_BOTTOM) / 887,
+		LADDER_CENTER = (AZTEC_LADDER_ZMIN + AZTEC_LADDER_ZMAX) / 2,
+	};
+	static Gfx texture[] = {
+		gsSPTexture(0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON),
+		{ .words = { 0xc0080002, LADDER_TEXTURE } }, // Type 2 texture load with repeating S and T
+	};
+	const struct coord *origin = roomGetPosPtr(AZTEC_LADDER_TRENCH_ROOM);
+	const s16 x = AZTEC_LADDER_FACE_X - origin->x;
+	const s16 bottom = AZTEC_LADDER_BOTTOM - origin->y;
+	const s16 top = AZTEC_LADDER_LIP - origin->y;
+	const s16 zmin = LADDER_CENTER - LADDER_HALF_WIDTH - origin->z;
+	const s16 zmax = LADDER_CENTER + LADDER_HALF_WIDTH - origin->z;
+	Vtx *vertices = gfxAllocateVertices(4);
+	Col *colour = gfxAllocateColours(1);
+
+	vertices[0] = (Vtx) { .x = x, .y = bottom, .z = zmin };
+	vertices[1] = (Vtx) { .x = x, .y = bottom, .z = zmax, .s = LADDER_TEXTURE_WIDTH };
+	vertices[2] = (Vtx) { .x = x, .y = top, .z = zmax, .s = LADDER_TEXTURE_WIDTH, .t = LADDER_TEXTURE_HEIGHT };
+	vertices[3] = (Vtx) { .x = x, .y = top, .z = zmin, .t = LADDER_TEXTURE_HEIGHT };
+	colour->word = PD_BE32(0x888888ff);
+
+	gdl = roomApplyMtx(gdl, AZTEC_LADDER_TRENCH_ROOM);
+	gDPPipeSync(gdl++);
+	gSPClearGeometryMode(gdl++, G_CULL_BOTH | G_LIGHTING);
+	gSPSetGeometryMode(gdl++, G_ZBUFFER | G_SHADE);
+	gDPSetCycleType(gdl++, G_CYC_2CYCLE);
+	gDPSetTexturePersp(gdl++, G_TP_PERSP);
+	gDPSetTextureFilter(gdl++, G_TF_BILERP);
+	gDPSetTextureLOD(gdl++, G_TL_LOD);
+	gDPSetAlphaCompare(gdl++, G_AC_NONE);
+	gDPSetCombineMode(gdl++, G_CC_TRILERP, G_CC_MODULATEIA2);
+	gDPSetRenderMode(gdl++, G_RM_PASS, G_RM_AA_ZB_XLU_SURF2);
+	const s32 prevgetex = gelevelsTexSet(true);
+	gdl += texLoadFromGdl(texture, sizeof(texture), gdl, NULL, NULL) / sizeof(Gfx);
+	gelevelsTexSet(prevgetex);
+	gSPColor(gdl++, osVirtualToPhysical(colour), 1);
+	gSPVertex(gdl++, osVirtualToPhysical(vertices), 4, 0);
+	gSPTri2(gdl++, 0, 1, 2, 0, 2, 3);
+	return gdl;
+}
+#endif
+
 Gfx *bgRenderScene(Gfx *gdl)
 {
 	s32 stagenum = g_Vars.stagenum;
 	s32 firstroomnum = -1;
 	s32 i;
 	s32 roomnum;
-	RoomNum roomnumsbyprop[200];
+	RoomNum *roomnumsbyprop = g_BgRoomNumsByProp; // MOD: bounds fix, was a 200-entry array
 	struct prop **ptr;
 	struct drawslot *thing;
 	RoomNum *roomnumptr;
 	struct prop *prop;
 	s16 tmp;
 	RoomNum *room;
-	s16 roomorder[60];
-	RoomNum roomnums[60];
+	s16 roomorder[BG_NUMDRAWSLOTS];
+	RoomNum roomnums[BG_NUMDRAWSLOTS];
 
 #ifdef PLATFORM_N64
 	g_NumRoomsWithGlares = 0;
@@ -998,6 +1072,20 @@ Gfx *bgRenderScene(Gfx *gdl)
 		gdl = bgRenderSceneInXray(gdl);
 		return gdl;
 	}
+
+#ifndef PLATFORM_N64
+	// MOD: how many rooms a generated level draws (once a few seconds, the most)
+	if (levelgenIsStage(g_Vars.stagenum)) {
+		static s32 most = 0, frames = 0;
+
+		most = g_BgNumAttemptedDrawSlots > most ? g_BgNumAttemptedDrawSlots : most;
+		if (++frames >= 2400) {
+			if (most > 60 || g_BgSnakeOverflows) sysLogPrintf(LOG_NOTE, "bg: up to %d rooms drawn a frame (room count %d, slots %d); %d rooms dropped from the portal search", most, g_Vars.roomcount, BG_NUMDRAWSLOTS, g_BgSnakeOverflows);
+			g_BgSnakeOverflows = 0;
+			most = frames = 0;
+		}
+	}
+#endif
 
 	// Build an array of all room numbers, and a parallel array that contains
 	// their draw order (as defined by portal code).
@@ -1077,7 +1165,11 @@ Gfx *bgRenderScene(Gfx *gdl)
 					|| stagenum == STAGE_TEST_OLD
 					|| stagenum == STAGE_INFILTRATION
 					|| stagenum == STAGE_ESCAPE
-					|| stagenum == STAGE_ATTACKSHIP)) {
+					|| stagenum == STAGE_ATTACKSHIP
+#ifndef PLATFORM_N64
+					|| modRunWantsStars(stagenum)
+#endif
+					)) {
 			gdl = text0f153628(gdl);
 
 			gSPMatrix(gdl++, osVirtualToPhysical(camGetOrthogonalMtxL()), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION);
@@ -1182,6 +1274,14 @@ Gfx *bgRenderScene(Gfx *gdl)
 	// Render wall hits
 	gSPMatrix(gdl++, osVirtualToPhysical(camGetOrthogonalMtxL()), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION);
 
+#ifndef PLATFORM_N64
+	const char *levelname = gelevelsName(stagenum);
+	if (levelname && strcmp(levelname, "Aztec") == 0 && g_Vars.roomcount > AZTEC_LADDER_WALKWAY_ROOM
+			&& ((g_Rooms[AZTEC_LADDER_TRENCH_ROOM].flags | g_Rooms[AZTEC_LADDER_WALKWAY_ROOM].flags) & ROOMFLAG_ONSCREEN)
+			&& debugIsBgRenderingEnabled() && getVar80084040()) {
+		gdl = bgRenderAztecRavineLadder(gdl);
+	}
+#endif
 	if (getVar80084040() && g_Vars.currentplayer->visionmode != VISIONMODE_XRAY) {
 		for (i = 0; i < g_BgNumDrawSlots; i++) {
 			roomnum = roomnums[i];
@@ -1235,6 +1335,7 @@ Gfx *bgRenderScene(Gfx *gdl)
 	debug0f119a80nb();
 #endif
 #endif
+
 
 	return gdl;
 }
@@ -1470,6 +1571,11 @@ void bgVerifyLightSums(char *file, s32 line)
  * - 4 bytes pointer to light table
  * - 4 bytes null
  */
+#ifndef PLATFORM_N64
+extern bool levelgenRoomLoadsHeld(void);   // levelgenstage.c
+extern void levelgenRoomLoadsResume(void);
+#endif
+
 void bgReset(s32 stagenum)
 {
 	u8 *header;
@@ -1486,6 +1592,10 @@ void bgReset(s32 stagenum)
 	uintptr_t scratch;
 
 	var8007fc0c = 8;
+
+#ifndef PLATFORM_N64
+	levelgenRoomLoadsResume();   // MOD: this stage's bg file is the one on disk again
+#endif
 
 #if VERSION >= VERSION_NTSC_1_0
 	if (IS4MB()) {
@@ -1526,7 +1636,9 @@ void bgReset(s32 stagenum)
 	var8007fc54 -= 0xc;
 
 #ifdef PLATFORM_64BIT
-	inflatedsize = romdataFileGetEstimatedSize(inflatedsize, LOADTYPE_BG);
+	// The primary header's six pointers double in size and each 20-byte room
+	// entry grows to 24 bytes. Reserve for both even on small maps.
+	inflatedsize += inflatedsize / 5 + 32;
 #endif
 
 	inflatedsize = ALIGN16(inflatedsize);
@@ -1595,9 +1707,18 @@ void bgReset(s32 stagenum)
 	preprocessBgSection2((u8 *)section2, inflatedsize);
 #endif
 
+#ifndef PLATFORM_N64
+	// MOD: GoldenEye levels - a GoldenEye level's rooms use GoldenEye's textures (gelevels.h)
+	{
+		const s32 prevgetex = gelevelsTexSet(gelevelsIsStage(g_Vars.stagenum));
+#endif
 	for (i = 0; i ^ inflatedsize; i++) {
 		texLoadFromTextureNum(section2[i] & 0xffff & 0xffff & 0xffff & 0xffff & 0xffff & 0xffff & 0xffff & 0xffff, NULL);
 	}
+#ifndef PLATFORM_N64
+		gelevelsTexSet(prevgetex);
+	}
+#endif
 
 	if (1);
 
@@ -2193,6 +2314,16 @@ void bgTick(void)
 		var8007fc10 = 100;
 	}
 
+#ifndef PLATFORM_N64
+	// MOD (2026-11-16): a generated level loads every room that comes into
+	// view at once (the game loads 4 a frame, and a room not loaded yet is not
+	// drawn: turning to face a hundred rooms of open ground showed holes for
+	// a moment). Its rooms are small, and heap memory has room for all of them.
+	if (levelgenIsStage(g_Vars.stagenum)) {
+		var8007fc10 = 200;
+	}
+#endif
+
 	g_CamRoom = g_Vars.currentplayer->cam_room;
 
 #if VERSION >= VERSION_NTSC_1_0
@@ -2206,6 +2337,9 @@ void bgTick(void)
 
 Gfx *bgRender(Gfx *gdl)
 {
+#ifndef PLATFORM_N64
+	wallhitBeginViewport();
+#endif
 	gdl = lightsSetDefault(gdl);
 
 	gSPSegment(gdl++, SPSEGMENT_BG_DL, g_BgPrimaryData);
@@ -2397,6 +2531,17 @@ bool bg3dPosTo2dPos(struct coord *cornerpos, struct coord *screenpos)
 	return true;
 }
 
+static f32 bgPortalThickness(s32 portalnum)
+{
+#ifndef PLATFORM_N64
+	if (gelevelsIsStage(g_Vars.stagenum)) {
+		u8 code = g_BgPortals[portalnum].thickness;
+		return (code & 15) * 0.25f * (1u << (code >> 4));
+	}
+#endif
+	return 0;
+}
+
 bool bgGetPortalScreenBbox(s32 portalnum, struct screenbox *box)
 {
 	s32 i;
@@ -2408,6 +2553,8 @@ bool bgGetPortalScreenBbox(s32 portalnum, struct screenbox *box)
 	f32 sp2d4[2][2];
 	struct portalthing2 *thing;
 	struct portalthing2 things[40];
+	f32 thickness = bgPortalThickness(portalnum);
+	s32 pass;
 
 	if (g_PortalCameraCache[portalnum].updatedframe2 == g_BgFrameCount) {
 		box->xmin = g_PortalCameraCache[portalnum].xmin;
@@ -2418,9 +2565,13 @@ bool bgGetPortalScreenBbox(s32 portalnum, struct screenbox *box)
 		return g_PortalCameraCache[portalnum].bboxisvalid;
 	}
 
-	len = portalConvertCoordinates(portalnum, &start, things);
-
 	numvalid = 0;
+	for (pass = 0; pass < (thickness > 0 ? 2 : 1); pass++) {
+#ifndef PLATFORM_N64
+	len = portalConvertCoordinatesOffset(portalnum, &start, things, pass == 0 ? thickness : -thickness);
+#else
+	len = portalConvertCoordinates(portalnum, &start, things);
+#endif
 	thing = &things[start];
 
 	for (j = 0; j < len; j++) {
@@ -2452,6 +2603,7 @@ bool bgGetPortalScreenBbox(s32 portalnum, struct screenbox *box)
 		}
 
 		thing++;
+	}
 	}
 
 	if (numvalid == 0) {
@@ -2811,6 +2963,15 @@ void bgLoadRoom(s32 roomnum)
 	bgVerifyLightSums("bg.c", 7076);
 #endif
 
+#ifndef PLATFORM_N64
+	// MOD: the next generated level's files are already on disk while the old level is still
+	// drawn for a frame or two: a room loaded now would be read from the new bg file at the
+	// old level's offsets (levelgenstage.c)
+	if (levelgenRoomLoadsHeld()) {
+		return;
+	}
+#endif
+
 	if (roomnum == 0 || roomnum >= g_Vars.roomcount) {
 		return;
 	}
@@ -2974,6 +3135,11 @@ void bgLoadRoom(s32 roomnum)
 		// changed to point to the written GBI.
 		itergdl2 = gfxblocks[0];
 
+#ifndef PLATFORM_N64
+		// MOD: GoldenEye levels (gelevels.h)
+		const s32 prevgetex = gelevelsTexSet(gelevelsIsStage(g_Vars.stagenum));
+#endif
+
 		for (i = 0; i < numgdls; i++) {
 			s32 byteswritten;
 			len = gfxblocks[i + 1] - gfxblocks[i];
@@ -2984,6 +3150,10 @@ void bgLoadRoom(s32 roomnum)
 
 			itergdl2 = (u8 *) ALIGN8((uintptr_t) (itergdl2 + byteswritten));
 		}
+
+#ifndef PLATFORM_N64
+		gelevelsTexSet(prevgetex);
+#endif
 
 		gdlpointers[numgdls] = itergdl2;
 
@@ -3227,6 +3397,14 @@ void bgTickRooms(void)
 			if (g_Rooms[i].flags & ROOMFLAG_ONSCREEN) {
 				g_Rooms[i].loaded240 = 1;
 			}
+
+#ifndef PLATFORM_N64
+			// MOD (2026-11-16): a generated level keeps its rooms once loaded
+			// (bgTickPortals: no room out of view unloaded, to pop back in later)
+			if (levelgenIsStage(g_Vars.stagenum)) {
+				continue;
+			}
+#endif
 
 			if (numunloaded < 2 && g_Rooms[i].loaded240 == g_BgUnloadDelay240_2) {
 				bgUnloadRoom(i);
@@ -4662,6 +4840,9 @@ bool bgTestHitOnChr(struct model *model, struct coord *arg1, struct coord *arg2,
 	return hit;
 }
 
+static bool g_BgShotPassGlass;
+void bgSetShotPassGlass(bool enabled) { g_BgShotPassGlass = enabled; }
+
 bool bgTestHitInVtxBatch(struct coord *arg0, struct coord *arg1, struct coord *arg2, struct vtxbatch *batch, s32 roomnum, struct hitthing *hitthing)
 {
 	s16 stack;
@@ -4849,6 +5030,10 @@ bool bgTestHitInVtxBatch(struct coord *arg0, struct coord *arg1, struct coord *a
 #endif
 												hit = false;
 											}
+
+											if (g_BgShotPassGlass && texturenum >= 0 && texturenum < NUM_TEXTURES
+													&& (g_Textures[texturenum].surfacetype == SURFACETYPE_GLASS
+														|| g_Textures[texturenum].surfacetype == SURFACETYPE_GLASSXLU)) hit = false;
 
 											if (hit) {
 												lowestsqdist = sqdist;
@@ -5832,12 +6017,12 @@ void bgTickPortalsXray(void)
 	g_BgNumDrawSlots = 0;
 	g_BgNumAttemptedDrawSlots = 0;
 
-	g_BgDrawSlots[60].roomnum = -1;
-	g_BgDrawSlots[60].draworder = 255;
-	g_BgDrawSlots[60].box.xmin = xmin;
-	g_BgDrawSlots[60].box.ymin = ymin;
-	g_BgDrawSlots[60].box.xmax = xmax;
-	g_BgDrawSlots[60].box.ymax = ymax;
+	g_BgDrawSlots[BG_NUMDRAWSLOTS].roomnum = -1;
+	g_BgDrawSlots[BG_NUMDRAWSLOTS].draworder = 255;
+	g_BgDrawSlots[BG_NUMDRAWSLOTS].box.xmin = xmin;
+	g_BgDrawSlots[BG_NUMDRAWSLOTS].box.ymin = ymin;
+	g_BgDrawSlots[BG_NUMDRAWSLOTS].box.xmax = xmax;
+	g_BgDrawSlots[BG_NUMDRAWSLOTS].box.ymax = ymax;
 
 	g_BgMaxDrawOrder = 0;
 	g_BgMinDrawOrder = 0x7fff;
@@ -5854,7 +6039,7 @@ void bgTickPortalsXray(void)
 			if (1);
 			if (1);
 
-			if (index < 60) {
+			if (index < BG_NUMDRAWSLOTS) {
 				f32 x;
 				f32 y;
 				f32 z;
@@ -5962,11 +6147,14 @@ void bgAddToSnake(RoomNum fromroomnum, RoomNum roomnum, s16 depth, struct screen
 
 	g_BgSnake.headindex++;
 
-	if (g_BgSnake.headindex == 250) {
+	if (g_BgSnake.headindex == ARRAYCOUNT(g_BgSnake.items)) {
 		g_BgSnake.headindex = 0;
 	}
 
 	if (g_BgSnake.headindex == g_BgSnake.tailindex) {
+#ifndef PLATFORM_N64
+		g_BgSnakeOverflows++;   // MOD: a room dropped from this frame's search (bgRenderScene logs it)
+#endif
 		g_BgSnake.headindex--;
 	}
 }
@@ -6012,9 +6200,9 @@ void bgConsumeSnakeItem(struct bgsnakeitem *item)
 				+ metric->normal.y * campos->f[1]
 				+ metric->normal.z * campos->f[2];
 
-			if (sum < metric->min) {
+			if (sum < metric->min - bgPortalThickness(portalnum)) {
 				g_PortalCameraCache[portalnum].side = 1;
-			} else if (sum > metric->max) {
+			} else if (sum > metric->max + bgPortalThickness(portalnum)) {
 				g_PortalCameraCache[portalnum].side = 0;
 			} else {
 				g_PortalCameraCache[portalnum].side = 2;
@@ -6072,7 +6260,8 @@ void bgConsumeSnakeItem(struct bgsnakeitem *item)
 		}
 
 		// Reusing the side variable as a bboxisvalid variable
-		if (g_BgPortals[portalnum].flags & PORTALFLAG_02) {
+		if ((g_BgPortals[portalnum].flags & PORTALFLAG_02)
+				|| (side == 2 && bgPortalThickness(portalnum) > 0)) {
 			newbox.xmin = item->screenbox.xmin;
 			newbox.ymin = item->screenbox.ymin;
 			newbox.xmax = item->screenbox.xmax;
@@ -6080,6 +6269,7 @@ void bgConsumeSnakeItem(struct bgsnakeitem *item)
 			side = true;
 		} else {
 			side = bgGetPortalScreenBbox(portalnum, &newbox);
+
 		}
 
 		if (side) {
@@ -6275,16 +6465,16 @@ void bgTickPortals(void)
 		g_BgNumAttemptedDrawSlots = 0;
 		g_BgMaxDrawOrder = 0;
 		g_BgMinDrawOrder = 32767;
-		g_BgDrawSlots[60].roomnum = -1;
-		g_BgDrawSlots[60].draworder = 255;
+		g_BgDrawSlots[BG_NUMDRAWSLOTS].roomnum = -1;
+		g_BgDrawSlots[BG_NUMDRAWSLOTS].draworder = 255;
 		g_BgSnake.count = 0;
 		g_BgSnake.headindex = 0;
 		g_BgSnake.tailindex = 0;
 		g_BgRoomTestsDisabled = false;
-		g_BgDrawSlots[60].box.xmin = box.xmin;
-		g_BgDrawSlots[60].box.ymin = box.ymin;
-		g_BgDrawSlots[60].box.xmax = box.xmax;
-		g_BgDrawSlots[60].box.ymax = box.ymax;
+		g_BgDrawSlots[BG_NUMDRAWSLOTS].box.xmin = box.xmin;
+		g_BgDrawSlots[BG_NUMDRAWSLOTS].box.ymin = box.ymin;
+		g_BgDrawSlots[BG_NUMDRAWSLOTS].box.xmax = box.xmax;
+		g_BgDrawSlots[BG_NUMDRAWSLOTS].box.ymax = box.ymax;
 
 		bgCmdExecute(g_BgCommands);
 

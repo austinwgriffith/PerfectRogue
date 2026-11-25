@@ -5,5 +5,6 @@
 #include "types.h"
 
 s32 portalConvertCoordinates(s32 portalnum, s32 *start, struct portalthing2 *things);
+s32 portalConvertCoordinatesOffset(s32 portalnum, s32 *start, struct portalthing2 *things, f32 offset);
 
 #endif

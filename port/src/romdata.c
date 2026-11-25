@@ -8,6 +8,7 @@
 #include "romdata.h"
 #include "fs.h"
 #include "system.h"
+#include "utils.h"
 #include "preprocess.h"
 #include "platform.h"
 
@@ -48,7 +49,9 @@
 #error "This ROM version is unsupported."
 #endif
 
-#define ROMDATA_MAX_FILES 2048
+// MOD: GoldenEye levels - room past the ROM's ~2000 files for files added at
+// boot (romdataFileAdd(), gelevels.c). Must match NUM_FILE_SLOTS (files.h).
+#define ROMDATA_MAX_FILES 4096
 
 #define GBC_ROM_NAME "pd.gbc"
 #define GBC_ROM_SIZE 4194304
@@ -75,6 +78,7 @@ struct romfile {
 	preprocessfunc preprocess;
 	s32 source; // enum loadsource
 	s32 preprocessed;
+	const char *path; // MOD: an added file's own path (romdataFileAdd()); NULL: files/<name>
 };
 
 // MOD: light patches - by joshuarwood (perfect_dark PR #722): the file patches
@@ -464,7 +468,11 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 	// try to load external file
 	if (fileSlots[fileNum].source == SRC_UNLOADED) {
 		char tmp[FS_MAXPATH] = { 0 };
-		snprintf(tmp, sizeof(tmp), ROMDATA_FILEDIR "/%s", fileSlots[fileNum].name);
+		if (fileSlots[fileNum].path) {
+			snprintf(tmp, sizeof(tmp), "%s", fileSlots[fileNum].path);
+		} else {
+			snprintf(tmp, sizeof(tmp), ROMDATA_FILEDIR "/%s", fileSlots[fileNum].name);
+		}
 		if (fsFileSize(tmp) > 0) {
 			u32 size = 0;
 			out = fsFileLoad(tmp, &size);
@@ -519,12 +527,68 @@ void romdataFileFree(s32 fileNum)
 	fileSlots[fileNum].source = SRC_UNLOADED;
 }
 
+/**
+ * MOD: level generator. Makes a file added with romdataFileAdd() be read from
+ * its path again at the next load (the generator rewrites its four files for
+ * every level). Frees what was read. Does nothing to the ROM's own files.
+ */
+void romdataFileReload(s32 fileNum)
+{
+	if (fileNum < 1 || fileNum >= ROMDATA_MAX_FILES || !fileSlots[fileNum].path) {
+		return;
+	}
+
+	if (fileSlots[fileNum].data) {
+		sysMemFree(fileSlots[fileNum].data);
+	}
+
+	fileSlots[fileNum].data = NULL;
+	fileSlots[fileNum].size = 0;
+	fileSlots[fileNum].source = SRC_UNLOADED;
+	fileSlots[fileNum].preprocessed = 0;
+}
+
 const char *romdataFileGetName(s32 fileNum)
 {
 	if (fileNum < 1 || fileNum >= ROMDATA_MAX_FILES) {
 		return NULL;
 	}
 	return fileSlots[fileNum].name;
+}
+
+/**
+ * MOD: GoldenEye levels. Gives a file that is not in the ROM a file number,
+ * after the ROM's own, loaded from `path` (relative to the base dir) the way
+ * a replacement under files/ is. Returns the number, or -1 when the table is
+ * full. Adding the same name twice returns the first number.
+ */
+s32 romdataFileAdd(const char *name, const char *path)
+{
+	s32 i = romdataFileGetNumForName(name);
+
+	if (i > 0) {
+		return i;
+	}
+
+	for (i = 1; i < ROMDATA_MAX_FILES; ++i) {
+		if (!fileSlots[i].name && !fileSlots[i].data) {
+			break;
+		}
+	}
+
+	if (i >= ROMDATA_MAX_FILES) {
+		sysLogPrintf(LOG_ERROR, "romdataFileAdd: no free file slot for %s", name);
+		return -1;
+	}
+
+	fileSlots[i].name = strDuplicate(name);
+	fileSlots[i].path = strDuplicate(path);
+	fileSlots[i].data = NULL;
+	fileSlots[i].size = 0;
+	fileSlots[i].source = SRC_UNLOADED;
+	fileSlots[i].preprocessed = 0;
+
+	return i;
 }
 
 s32 romdataFileGetNumForName(const char *name)

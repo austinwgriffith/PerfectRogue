@@ -29,6 +29,7 @@
 #include "config.h"
 #include "system.h"
 #include "clipcheck.h"
+#include "gelevels.h"
 #include "ragdoll.h"
 #include "pdphysics.h"
 #include "game/propobj.h"
@@ -131,7 +132,11 @@ static s32 clipLog(void)
 }
 // Scripted walks (Extraction, The Duel) too: their paths are laid out for
 // the game's collision, and one straying onto a drawn door frame got stuck.
-#define CLIP_PLAYERMODE ((g_ClipForceGame || g_Vars.tickmode == TICKMODE_AUTOWALK) ? CLIPMODE_GAME : g_ClipPlayerMode)
+static bool g_ClipUseDrawnArenaCollision;
+
+#define CLIP_PLAYERMODE (g_Vars.tickmode == TICKMODE_AUTOWALK ? CLIPMODE_GAME \
+	: g_ClipUseDrawnArenaCollision ? CLIPMODE_GENERATED \
+	: g_ClipForceGame ? CLIPMODE_GAME : g_ClipPlayerMode)
 
 /*
  * Ladders work as in the original without handing the player's movement over
@@ -2001,6 +2006,9 @@ static void clipAddRoomFromCache(s32 roomnum)
 
 void clipcheckStageLoad(void)
 {
+	const char *name = gelevelsName(g_Vars.stagenum);
+	g_ClipUseDrawnArenaCollision = name && (strcmp(name, "Stack") == 0
+		|| strcmp(name, "Library") == 0 || strcmp(name, "Basement") == 0);
 	memset(g_ClipRoomDone, 0, sizeof(g_ClipRoomDone));
 	memset(g_ClipStats, 0, sizeof(g_ClipStats));
 	memset(g_ClipDbgMarks, 0, sizeof(g_ClipDbgMarks));
@@ -2430,6 +2438,14 @@ s32 clipcheckSegment(const struct coord *a, const struct coord *b, u32 groupmask
 	}
 
 	return true;
+}
+
+s32 clipcheckArenaShotReady(void)
+{
+	if (!g_ClipUseDrawnArenaCollision || !g_ClipReady || g_ClipCacheState != 3) return false;
+
+	const char *name = gelevelsName(g_Vars.stagenum);
+	return name && (strcmp(name, "Library") == 0 || strcmp(name, "Stack") == 0);
 }
 
 /**
@@ -3404,7 +3420,8 @@ s32 clipcheckPlayerMoveBlocked(struct coord *from, struct coord *to, f32 ymax)
 	f32 feet, low, top, radius;
 	f32 best, nx = 0.0f, nz = 0.0f;
 
-	if (!g_ClipRenderWalls || !g_ClipReady || CLIP_PLAYERMODE == CLIPMODE_GAME || player == NULL || player->prop == NULL) {
+	if ((!g_ClipRenderWalls && !g_ClipUseDrawnArenaCollision)
+			|| !g_ClipReady || CLIP_PLAYERMODE == CLIPMODE_GAME || player == NULL || player->prop == NULL) {
 		return false;
 	}
 

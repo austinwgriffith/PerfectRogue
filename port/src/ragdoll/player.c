@@ -4,6 +4,7 @@
  */
 
 #include "rd_internal.h"
+#include <string.h>
 #include "lib/joy.h"
 #include "game/options.h"
 #include "game/menu.h"
@@ -202,7 +203,7 @@ s32 ragdollWantPlayerBody(void)
 
 	// MOD: combat simulator ragdolls - the Combat Simulator too
 	if (!g_RagdollsEnabled || !g_RagdollDeathCam || !g_RagdollLevelLoaded || !pdphysIsReady()
-			|| g_Vars.stagenum >= STAGE_TITLE
+			|| !STAGE_IS_LEVEL(g_Vars.stagenum)
 			|| pn < 0 || pn >= MAX_PLAYERS) {
 		return false;
 	}

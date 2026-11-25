@@ -11,6 +11,7 @@
 #include "game/file.h"
 #include "game/gfxmemory.h"
 #include "game/lang.h"
+#include "game/modrandom.h"
 #include "game/options.h"
 #include "game/propobj.h"
 #include "bss.h"
@@ -118,6 +119,7 @@ bool sightIsPropFriendly(struct prop *prop)
 	}
 
 	if (g_Vars.normmplayerisrunning == false
+			&& !modRandomIsOn()
 			&& prop->chr
 			&& (prop->chr->hidden2 & CHRH2FLAG_BLUESIGHT)) {
 		return true;

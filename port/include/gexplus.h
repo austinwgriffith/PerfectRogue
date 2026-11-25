@@ -1,0 +1,184 @@
+#ifndef _IN_GEXPLUS_H
+#define _IN_GEXPLUS_H
+
+#include <PR/ultratypes.h>
+
+struct chrdata;
+struct headorbody;
+
+/**
+ * GE Plus, the GoldenEye remake's Combat Simulator: GoldenEye's own
+ * multiplayer scenarios, each one of Perfect Dark's scenarios with its options
+ * and, for You Only Live Twice, a rule of its own. Only while g_GexPlusMode is on
+ * (modloader.h). port/src/gexplus.c.
+ */
+#define GEXPLUS_NORMAL        0
+#define GEXPLUS_YOLT          1 // You Only Live Twice
+#define GEXPLUS_FLAGTAG       2 // The Living Daylights
+#define GEXPLUS_LICENCETOKILL 3
+#define GEXPLUS_GOLDENGUN     4 // The Man with the Golden Gun
+#define GEXPLUS_NUMSCENARIOS  5
+
+s32 gexPlusGetScenario(void);
+void gexPlusSetScenario(s32 scenario);
+const char *gexPlusScenarioName(s32 scenario);
+
+// You Only Live Twice: whether a chr has died its two times and stays down
+s32 gexPlusLivesSpent(struct chrdata *chr);
+// and whether the match is over, only one chr having a life left
+s32 gexPlusMatchOver(void);
+
+// The Man with the Golden Gun: keeps its one Golden Gun in the arena, each frame
+void gexPlusTick(void);
+
+// Simulants wear GoldenEye's own characters (release or ROM, never GoldenEye X), at match start
+void gexPlusThemeSimulants(void);
+
+
+// A converted GoldenEye mission's chr, before Perfect Dark makes it: its body
+// is GoldenEye's own character number, which becomes whatever the player has
+// installed to wear - the XBLA release's characters, GoldenEye X's, or Perfect
+// Dark's own.
+// A converted GoldenEye mission's props, once and before anything reads them:
+// a chr's body is GoldenEye's own character number and a weapon's model is the
+// pickup prop it was converted with, and both become what the player has
+// installed.
+void gexPlusMissionSetup(u32 *props);
+
+// and the bodies its own lists spawn, once the ailists have been pointed at
+// themselves
+void gexPlusMissionAilists(void);
+
+// The heads a converted mission's guards wear: GoldenEye's own four, into the
+// game's own active lists, from the end of bodiesReset()
+void gexPlusMissionHeads(void);
+
+// The head a converted mission's body wears where its record named one rather
+// than taking GoldenEye's pool, or -1. bodyChooseHead() asks.
+s32 gexPlusRomOwnHead(s32 bodynum);
+// Bond as GoldenEye dresses him for this mission's outfit; false off a mission
+s32 gexPlusMissionBond(s32 outfit, s32 *bodynum, s32 *headnum);
+
+// Whether a row of g_HeadsAndBodies is one of GoldenEye's own characters, in a
+// mission: headfit.c leaves a pair GoldenEye made for itself alone
+s32 gexPlusRomIsPoolRow(s32 num);
+
+// GoldenEye's own character number behind a row of g_HeadsAndBodies, or -1 for
+// a row that is not one of its characters. The watch asks, to dress its arm in
+// the sleeve the player's own character is wearing (gewatch.c).
+s32 gexPlusRomChrForRow(s32 row);
+
+// Whether a body row is a friend of Bond's on one of GoldenEye's own missions -
+// Natalya, Trevelyan as 006 (Facility only), the scientists and Dr. Doak - so
+// Perfect Dark's sight shows them blue (CHRH2FLAG_BLUESIGHT, set by
+// bodyAllocateChr() and chrSpawnAtCoord()). GoldenEye has no friend or foe of
+// its own: everyone is on its guards' side. And whether it is a scientist, who
+// turns red again when he draws his hidden pistol (aiTryEquipWeapon()).
+s32 gexPlusRomRowIsAlly(s32 row);
+s32 gexPlusRomRowIsCivilian(s32 row);
+
+// Whether DK Mode leaves this body and head at their own proportions: the
+// Japanese cartridge's named characters, under GE Plus's Japan region rules
+s32 gexPlusDkModeSpares(s32 bodynum, s32 headnum);
+
+// GoldenEye's own characters for the Combat Simulator's lists when there is no
+// XBLA release to take them from (gebean.c's pool): Begin finds the ROM's
+// conversion and reads its table, answering how many characters it has (0 for
+// none); Fill makes `hb` GoldenEye's character `num` (its own c_item_entries
+// number) on its converted model and answers the model's file, or 0
+s32 gexPlusRomMpBegin(void);
+s32 gexPlusRomMpFill(s32 num, struct headorbody *hb);
+
+// A converted GoldenEye mission's own text bank - its objectives and its radio
+// messages - loaded out of the mod's menu/ into LANGBANK_GEMISSION. Cleared
+// when the stage is not one of the missions.
+void gexPlusMissionLangLoad(s32 stagenum);
+const char *gexPlusMissionLangTr(s32 slot);
+s32 gexPlusMissionLangCount(void);
+
+// The animations a converted mission's PlayAnimation commands name, appended
+// after the game's own, and what GoldenEye's own animation id is once they are
+// Where GoldenEye sets a hat of `hattype` on the head row `headnum`: offset
+// x/y/z and scale x/y/z (headHat_array_8003E464). 0 where it has no row.
+s32 gexPlusHeadHat(s32 headnum, s32 hattype, f32 *out);
+
+// The kind of hat (propobj.c's hatGetType()) GoldenEye prop `propnum` is on
+// this stage's conversion, by its own get_hat_model() (menu/hattypes.bin), -1
+// for a prop that is no hat of its table; -2 where the conversion says nothing
+// (a stage that is not converted, or an older conversion), which takes
+// GoldenEye's kinds.
+s32 gexPlusHatType(s32 propnum);
+
+void gexPlusMissionAnimLoad(s32 stagenum);
+s32 gexPlusMissionAnim(s32 geid);
+
+// GoldenEye's own end of a mission (its TriggerFadeAndExitLevelOnButtonPress):
+// the list says the level is over, and the next button press fades the screen
+// out and leaves. The tick runs every frame of a level, from lvTick().
+void gexPlusExitOnButtonPress(void);
+void gexPlusMissionExitTick(void);
+// 0 none, 1 waiting for the press, 2 fading out (a client's: the host's)
+s32 gexPlusExitPending(void);
+// a client: the host's exit state from its mission block (netcoop.c)
+void gexPlusExitFromHost(s32 state);
+
+// Perfect Dark's psychosis gun on a converted mission's guard, whose GoldenEye
+// AI list never looks for CHRHFLAG_PSYCHOSISED: hands him to
+// GAILIST_INIT_PSYCHOSIS. True if it did; chrDamage() sets the flag otherwise
+s32 gexPlusPsychosis(struct chrdata *chr);
+
+/**
+ * GE Plus's guns are GoldenEye's: the weapon sets its arenas list (GoldenEye's
+ * own fourteen out of the ROM, else GoldenEye X's borrowed ones; 0 for the
+ * whole list), and Mod.GePlusPdGuns, which lists Perfect Dark's beside them.
+ */
+s32 gexPlusWeaponSets(s32 *first);
+void gexPlusWeaponSetsAppend(void); // GoldenEye's own sets in the whole list, at boot and after a swap
+s32 gexPlusGetPdGuns(void);
+void gexPlusSetPdGuns(s32 on);
+// Mod.GePlusPdEnemies: hostile human guards wear Natalya or Xenia
+s32 gexPlusGetPdEnemies(void);
+void gexPlusSetPdEnemies(s32 on);
+// Mod.GePlusCheatGuns: GoldenEye's Silver PP7, Gold PP7 and taser offered in
+// the Combat Simulator's weapons and three weapon sets of GoldenEye's (off)
+s32 gexPlusGetCheatGuns(void);
+void gexPlusSetCheatGuns(s32 on);
+// Mod.CsHackGuns: a GoldenEye ROM hack's guns ("gf64", "tnd64"; "" GoldenEye's
+// own) in Perfect Dark's Combat Simulator; the hack's mounted mod dir, -1 none
+const char *gexPlusGetCsHackGuns(void);
+void gexPlusSetCsHackGuns(const char *tag);
+s32 gexPlusCsHackDirIndex(void);
+s32 gexPlusCsHackDirOfTag(const char *tag); // a ROM hack's mounted mod dir by its tag, -1 none
+// the Weapons page's "ROM Hack Guns": 0 Off, then each hack converted here
+s32 gexPlusCsHackNumOptions(void);
+const char *gexPlusCsHackOptionName(s32 option);
+void gexPlusCsHackOptionSet(s32 option);
+s32 gexPlusCsHackOptionSelected(void);
+
+/**
+ * The Combat Simulator's dropdowns mark the rows a GoldenEye conversion
+ * brings where they sit among Perfect Dark's: " [GE]", " [GF]", " [TND]".
+ * gexPlusMenuTagOfDir() is a conversion folder's tag ("GE", "GF", "TND"; NULL
+ * for any other folder), gexPlusWeaponSetTag() a weapon set's (its index in
+ * g_MpWeaponSets) when it is in GoldenEye's block of the whole list, and
+ * gexPlusMenuTagged() the row's text with the tag put before its newline (a
+ * buffer of a small ring, good until a dozen more calls; the text itself when
+ * `tag` is NULL).
+ */
+const char *gexPlusMenuTagOfDir(const char *dir);
+const char *gexPlusWeaponSetTag(s32 setindex);
+const char *gexPlusMenuTagged(const char *text, const char *tag);
+
+/**
+ * Whether this match's pickups pair by GoldenEye's rule: an arena of a
+ * GoldenEye ROM's conversion (GE Plus's or a ROM hack's), where only a linked
+ * prop gives a pair - the same gun from a second pad adds ammo. Perfect
+ * Dark's own arenas and its mods' keep Perfect Dark's second-pad pair.
+ */
+s32 gexPlusArenaPairsLinkedOnly(void);
+
+/** The explosion a converted GoldenEye prop makes when destroyed (GoldenEye's own table), or -1. */
+s32 gexPlusPropExplosionType(s32 modelnum);
+u16 gexPlusPropDeformSeed(s32 modelnum, s32 index);
+
+#endif

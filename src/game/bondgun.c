@@ -54,6 +54,8 @@
 #include "data.h"
 #include "types.h"
 #ifndef PLATFORM_N64
+#include <string.h>
+#include <stdio.h>
 #include "game/artifact.h" // MOD: gun blocks glares - by joshuarwood (perfect_dark PR #714)
 #include "game/stagetable.h"
 #include "video.h"
@@ -61,6 +63,11 @@
 #include "bodyview.h" // MOD: body awareness
 #ifdef PD_GRAVITY
 #include "gravity.h" // MOD: gravity
+#include "game/modoptions.h"
+#include "game/modrules.h"
+#include "game/modrandom.h"
+#include "system.h"
+#include <string.h>
 #endif
 #endif
 
@@ -116,6 +123,57 @@ struct gunfirevis {
 	f32 flashscale;
 	f32 flashrot;
 };
+
+static const u8 g_QuickWeapons[] = {
+	WEAPON_GRENADE, WEAPON_NBOMB, WEAPON_TIMEDMINE, WEAPON_PROXIMITYMINE, WEAPON_REMOTEMINE, WEAPON_COMBATKNIFE
+};
+
+/** The function a quick throw uses: a knife's throw is its secondary (the primary is the slash). */
+static s32 bgunQuickFuncNum(s32 weaponnum)
+{
+	return weaponnum == WEAPON_COMBATKNIFE ? FUNC_SECONDARY : FUNC_PRIMARY;
+}
+
+enum quickphase { QUICK_IDLE, QUICK_PRIMING, QUICK_RECOVERY };
+
+struct quickgrenade {
+	enum quickphase phase;
+	s32 selection;
+	f32 frame;
+	f32 age;
+	bool released;
+	bool pinned;
+	bool throwing;
+	bool remoteplaced;
+	u8 reloadmask;
+	Mtxf holdmatrix;
+	bool haspose;
+	struct modeldef *models[ARRAYCOUNT(g_QuickWeapons)];
+	struct modeldef *fallbackhands;
+};
+
+static struct quickgrenade g_QuickGrenades[MAX_PLAYERS];
+
+static struct quickgrenade *bgunQuick(void)
+{
+	return &g_QuickGrenades[g_Vars.currentplayernum];
+}
+
+void bgunQuickCancel(void)
+{
+	bgunQuick()->phase = QUICK_IDLE;
+	bgunQuick()->reloadmask = 0;
+}
+
+void bgunQuickReset(void)
+{
+	memset(bgunQuick(), 0, sizeof(struct quickgrenade));
+}
+
+bool bgunQuickRemotePlaced(void)
+{
+	return bgunQuick()->remoteplaced;
+}
 
 static struct gunfirevis g_GunFireVis[MAX_PLAYERS][2];
 
@@ -545,6 +603,51 @@ s32 bgunGetUnequippedReloadIndex(s32 weaponnum)
 	return -1;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Perfect Random: every gun remembers how many rounds are in its clip when it
+ * is put away (stock Perfect Dark returns them to the reserve, and only the
+ * magnums, shotgun and crossbow reload slowly meanwhile). Memory is kept per
+ * weapon and hand. A gun is filled from the ammo reserve, as much as the
+ * reserve allows, only the first time it is taken out; after that it comes out
+ * with what it was put away with, even if that is nothing.
+ *
+ * Guns that cannot hold a reserve (cloak, boost) or whose equipped ammo is
+ * their reserve (grenades, mines, knives, N-Bombs) are left as they were.
+ */
+#define MODAMMO_MAXWEAPONS 256
+static s16 g_ModAmmoMem[MODAMMO_MAXWEAPONS][2][2]; // [weapon][hand][ammo index], 0 = nothing remembered
+static u8 g_ModAmmoSeen[MODAMMO_MAXWEAPONS][2];    // [weapon][hand]: has been wielded before
+
+static bool modAmmoOn(void)
+{
+	return modRandomIsOn();
+}
+
+static bool modAmmoClipWeapon(s32 weaponnum, s32 ammoindex)
+{
+	struct weapon *weapon;
+
+	if (weaponnum <= 0 || weaponnum >= MODAMMO_MAXWEAPONS || ammoindex < 0 || ammoindex > 1 || weaponnum == WEAPON_LAPTOPGUN) {
+		return false;
+	}
+
+	weapon = weaponFindById(weaponnum);
+
+	if (!weapon || !weapon->ammos[ammoindex]) {
+		return false;
+	}
+
+	return (weapon->ammos[ammoindex]->flags & (AMMOFLAG_NORESERVE | AMMOFLAG_EQUIPPEDISRESERVE)) == 0;
+}
+
+void bgunModAmmoReset(void)
+{
+	memset(g_ModAmmoMem, 0, sizeof(g_ModAmmoMem));
+	memset(g_ModAmmoSeen, 0, sizeof(g_ModAmmoSeen));
+}
+#endif
+
 /**
  * The magnums, shotgun and crossbow are special because that the game remembers
  * how much ammo is loaded in their clips when the weapon is not being used.
@@ -846,26 +949,30 @@ void bgun0f0981e8(struct hand *hand, struct modeldef *modeldef)
 							}
 							break;
 						case GUNCMD_REPEATUNTILFULL:
-							if (hand->incrementalreloading && s2 >= cmd->unk02 && s4 < cmd->unk02 && s4 < s2) {
+							// MOD: loop on the animation's real frame. The old test
+							// (s4 < keyframe <= s2) predicts the next frame from the
+							// unscaled tick, so an animation played faster than 1x
+							// (the shotgun's reload) steps over the keyframe unseen
+							// and the loop never happens: one shell, then it stops.
+							if (hand->incrementalreloading) {
+								f32 curframe = bgun0f09815c(hand);
+
+								if (curframe >= cmd->unk02) {
+									f32 sp78 = curframe;
+
+									while (sp78 >= cmd->unk02) {
+										sp78 += cmd->unk04 - cmd->unk02;
+									}
+
+									s4 = sp78;
+									hand->animframeinc = 0;
 #ifdef GUNANIM_FREAL
-								f32 sp78 = s2;
-
-								while (sp78 >= cmd->unk02) {
-									sp78 += cmd->unk04 - cmd->unk02;
-								}
-
-								s4 = sp78;
-								hand->animframeinc = 0;
-								hand->animframeincfreal = 0;
-#else
-								s32 sp78 = cmd->unk04 + (((s32)s2 - cmd->unk02) % ((cmd->unk02 - cmd->unk04) + 1));
-								s4 = sp78;
-								hand->animframeinc = 0;
+									hand->animframeincfreal = 0;
 #endif
-
-								modelSetAnimFrame(&hand->gunmodel, sp78);
-								hand->animloopcount++;
-								s2 = sp78;
+									modelSetAnimFrame(&hand->gunmodel, sp78);
+									hand->animloopcount++;
+									s2 = sp78;
+								}
 							}
 							break;
 						}
@@ -1215,9 +1322,31 @@ void bgun0f098df8(s32 weaponfunc, struct handweaponinfo *info, struct hand *hand
 void bgun0f098f8c(struct handweaponinfo *info, struct hand *hand)
 {
 	s32 i;
+#ifndef PLATFORM_N64
+	// Perfect Random: only the first time a gun is wielded is its clip filled
+	// from the reserve; later it keeps what it was put away with
+	const s32 modhand = hand == &g_Vars.currentplayer->hands[HAND_LEFT] ? HAND_LEFT : HAND_RIGHT;
+	const bool modtracked = modAmmoOn() && info->weaponnum > 0 && info->weaponnum < MODAMMO_MAXWEAPONS;
+	const bool modfirst = modtracked && !g_ModAmmoSeen[info->weaponnum][modhand];
+
+	if (modtracked) {
+		g_ModAmmoSeen[info->weaponnum][modhand] = 1;
+	}
+#endif
 
 	for (i = 0; i < 2; i++) {
-		if (weaponGetFunction(&hand->gset, i)) {
+		struct weaponfunc *func = weaponGetFunction(&hand->gset, i);
+
+		if (func) {
+#ifndef PLATFORM_N64
+			if (modAmmoOn() && func->ammoindex != -1 && modAmmoClipWeapon(info->weaponnum, func->ammoindex)) {
+				if (modfirst && hand->loadedammo[func->ammoindex] == 0) {
+					bgun0f098df8(i, info, hand, 0, 0);
+				}
+
+				continue;
+			}
+#endif
 			bgun0f098df8(i, info, hand, 0, 1);
 		}
 	}
@@ -3382,6 +3511,11 @@ bool bgunSetState(s32 handnum, s32 state)
 	bool valid = true;
 	struct hand *hand = &g_Vars.currentplayer->hands[handnum];
 
+#ifndef PLATFORM_N64
+	if (bgunQuick()->phase != QUICK_IDLE && (state == HANDSTATE_RELOAD || state == HANDSTATE_AUTOSWITCH || state == HANDSTATE_CHANGEGUN)) {
+		return false;
+	}
+#endif
 	// Sanity check - don't allow changing function if there is no other
 	if (state == HANDSTATE_CHANGEFUNC && weaponGetFunction(&hand->gset, 1 - hand->gset.weaponfunc) == NULL) {
 		valid = false;
@@ -3887,6 +4021,16 @@ bool bgunChangeGunMem(s32 newowner)
 			if (!player->haschrbody) {
 				unlock = true;
 			}
+
+#ifndef PLATFORM_N64
+			// MOD: body awareness - a body loaded in its own memory is not in
+			// the gun's, so it must not hold the gun's memory. A mission with
+			// no intro cutscene (an arena mission) never removes the body
+			// first, and the gun then waited on it for ever.
+			if (bodyViewOwnsBody()) {
+				unlock = true;
+			}
+#endif
 
 			if (newowner == GUNMEMOWNER_INVMENU && var8009dfc0 != 0) {
 				unlock = true;
@@ -4618,7 +4762,7 @@ struct defaultobj *bgunCreateThrownProjectile2(struct chrdata *chr, struct gset 
  * 2 = fumbling grenade from right hand (due to nbomb)
  * 3 = fumbling grenade from left hand (actually not possible)
  */
-void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
+static bool bgunThrowFrom(s32 handnum, struct gset *gset, struct coord *origin, Mtxf *orientation, s32 primetime)
 {
 	struct coord velocity = {0, 0, 0};
 	Mtxf sp1f4;
@@ -4655,9 +4799,7 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 
 	hand = g_Vars.currentplayer->hands + handnum;
 
-	muzzlepos.x = g_Vars.currentplayer->hands[handnum].muzzlepos.x;
-	muzzlepos.y = g_Vars.currentplayer->hands[handnum].muzzlepos.y;
-	muzzlepos.z = g_Vars.currentplayer->hands[handnum].muzzlepos.z;
+	muzzlepos = *origin;
 
 	mtx4LoadIdentity(&sp1f4);
 
@@ -4667,7 +4809,7 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 		mtx4MultMtx4InPlace(&sp190, &sp1f4);
 	}
 
-	mtx4Copy(&g_Vars.currentplayer->hands[handnum].muzzlemat, &sp190);
+	mtx4Copy(orientation, &sp190);
 
 	guNormalize(&sp190.m[0][0], &sp190.m[0][1], &sp190.m[0][2]);
 	guNormalize(&sp190.m[1][0], &sp190.m[1][1], &sp190.m[1][2]);
@@ -4695,7 +4837,7 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 
 	playerSetPerimEnabled(playerprop, true);
 
-	bgunCalculatePlayerShotSpread(&gunpos, &gundir, handnum, true);
+	bgunCalculatePlayerShotSpread(&gunpos, &gundir, handnum, gset == &hand->gset);
 	mtx4RotateVecInPlace(camGetProjectionMtxF(), &gundir);
 
 	if (droppinggrenade) {
@@ -4703,21 +4845,80 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 		velocity.x = gundir.x * 1.6666666f;
 		velocity.y = gundir.y * 1.6666666f;
 		velocity.z = gundir.z * 1.6666666f;
-	} else if (gsetHasFunctionFlags(&hand->gset, FUNCFLAG_CALCULATETRAJECTORY)) {
+	} else if (gsetHasFunctionFlags(gset, FUNCFLAG_CALCULATETRAJECTORY)) {
 		// Calculate the velocity based on the trajectory to the aimpos
 		propFindAimingAt(HAND_RIGHT, false, FINDPROPCONTEXT_QUERY);
 
-		if (hand->hasdotinfo) {
-			aimpos.x = hand->dotpos.x;
-			aimpos.y = hand->dotpos.y;
-			aimpos.z = hand->dotpos.z;
+		// A quick (off-hand) throw leaves from low on the left of the view, so
+		// the throw is aimed from there at what the crosshair is on (or, with
+		// nothing under it, a point far down the line of sight), not sent
+		// parallel to the view.
+		const bool quickaim = gset != &hand->gset;
+		const bool knife = gset->weaponnum == WEAPON_COMBATKNIFE;
+		struct hand *aimhand = quickaim ? &g_Vars.currentplayer->hands[HAND_RIGHT] : hand;
+		bool haveaim = aimhand->hasdotinfo;
 
+		if (haveaim) {
+			aimpos.x = aimhand->dotpos.x;
+			aimpos.y = aimhand->dotpos.y;
+			aimpos.z = aimhand->dotpos.z;
+		} else if (quickaim || knife) {
+			aimpos.x = g_Vars.currentplayer->cam_pos.x + gundir.x * 3000.0f;
+			aimpos.y = g_Vars.currentplayer->cam_pos.y + gundir.y * 3000.0f;
+			aimpos.z = g_Vars.currentplayer->cam_pos.z + gundir.z * 3000.0f;
+			haveaim = true;
+		}
+
+		if (knife) {
+			// The crosshair is the centre of the screen: cast a ray from the
+			// camera along the view and aim at what it hits (or far away),
+			// whatever the gun is doing, so the knife lands on the centre.
+			struct coord look = g_Vars.currentplayer->cam_look;
+			struct coord far;
+			guNormalize(&look.x, &look.y, &look.z);
+			far.x = g_Vars.currentplayer->cam_pos.x + look.x * 6000.0f;
+			far.y = g_Vars.currentplayer->cam_pos.y + look.y * 6000.0f;
+			far.z = g_Vars.currentplayer->cam_pos.z + look.z * 6000.0f;
+			aimpos = far;
+			playerSetPerimEnabled(playerprop, false);
+
+			if (cdExamLos08(&g_Vars.currentplayer->cam_pos, playerprop->rooms, &far, CDTYPE_ALL, GEOFLAG_BLOCK_SHOOT) == CDRESULT_COLLISION) {
+				cdGetPos(&aimpos, 11458, "propobj.c");
+			}
+
+			// Leave from the view line itself, just ahead of the camera, so the
+			// knife flies along it and is on the centre at every distance (from
+			// the hand it would only cross the centre at the far end).
+			{
+				struct coord start;
+				start.x = g_Vars.currentplayer->cam_pos.x + look.x * 10.0f;
+				start.y = g_Vars.currentplayer->cam_pos.y + look.y * 10.0f;
+				start.z = g_Vars.currentplayer->cam_pos.z + look.z * 10.0f;
+
+				if (cdTestLos11(&playerprop->pos, playerprop->rooms, &start, spawnrooms, CDTYPE_ALL) != CDRESULT_COLLISION) {
+					spawnpos = start;
+				}
+			}
+
+			playerSetPerimEnabled(playerprop, true);
+			haveaim = true;
+		}
+
+		if (haveaim && knife) {
+			// Throwing knives: straight at the crosshair, no arc (the physics
+			// are not the point). Powered below, so gravity leaves them alone.
+			sp140.x = aimpos.x - spawnpos.x;
+			sp140.y = aimpos.y - spawnpos.y;
+			sp140.z = aimpos.z - spawnpos.z;
+			guNormalize(&sp140.x, &sp140.y, &sp140.z);
+			gundir = sp140;
+		} else if (haveaim) {
 			chrCalculateTrajectory(&spawnpos, 21.666666f, &aimpos, &sp140);
 
 			radians = acosf(gundir.f[0] * sp140.f[0] + gundir.f[1] * sp140.f[1] + gundir.f[2] * sp140.f[2]);
 
-			// Check within 20 degrees
-			if (radians > 0.34901026f || radians < -0.34901026f) {
+			// Check within 20 degrees (a quick throw has to turn further: it starts off to the side)
+			if (!quickaim && (radians > 0.34901026f || radians < -0.34901026f)) {
 				mtx00016b58(&spf8, 0, 0, 0, gundir.x, gundir.y, gundir.z, 0, 1, 0);
 				mtx00016b58(&spb8, 0, 0, 0, sp140.x, sp140.y, sp140.z, 0, 1, 0);
 
@@ -4764,8 +4965,8 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 		bgunFreeWeapon(handnum);
 	}
 
-	// Add player movement to velocity
-	if (g_Vars.lvupdate240 > 0) {
+	// Add player movement to velocity (not to a knife: it goes where the crosshair is)
+	if (g_Vars.lvupdate240 > 0 && gset->weaponnum != WEAPON_COMBATKNIFE) {
 		velocity.x += (playerprop->pos.x - prevpos->x + extrapos->x) / g_Vars.lvupdate60freal;
 		velocity.y += (playerprop->pos.y - prevpos->y + extrapos->y) / g_Vars.lvupdate60freal;
 		velocity.z += (playerprop->pos.z - prevpos->z + extrapos->z) / g_Vars.lvupdate60freal;
@@ -4778,10 +4979,10 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 			weapon = (struct weaponobj *)obj;
 
 			if (gset->weaponnum == WEAPON_GRENADE && gset->weaponfunc == FUNC_PRIMARY) {
-				if (weapon->timer240 < hand->primetimer60 * 4) {
+				if (weapon->timer240 < primetime * 4) {
 					weapon->timer240 = 0;
 				} else {
-					weapon->timer240 -= hand->primetimer60 * 4;
+					weapon->timer240 -= primetime * 4;
 				}
 
 				weapon->gunfunc = gset->weaponfunc;
@@ -4796,9 +4997,13 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 
 		if (obj->hidden & OBJHFLAG_PROJECTILE) {
 			obj->projectile->flags |= PROJECTILEFLAG_LAUNCHING;
-			obj->projectile->nextsteppos.x = muzzlepos.x;
-			obj->projectile->nextsteppos.y = muzzlepos.y;
-			obj->projectile->nextsteppos.z = muzzlepos.z;
+			// A knife leaves from where it was spawned (on the view line), not from
+			// the hand's muzzle, or its first step starts off to the left
+			if (gset->weaponnum == WEAPON_COMBATKNIFE) {
+				obj->projectile->nextsteppos = spawnpos;
+			} else {
+				obj->projectile->nextsteppos = muzzlepos;
+			}
 
 			if (gset->weaponnum == WEAPON_GRENADE && gset->weaponfunc == FUNC_SECONDARY) {
 				obj->projectile->unk08c = 1.0f;
@@ -4807,13 +5012,20 @@ void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 			if (gset->weaponnum == WEAPON_COMBATKNIFE) {
 				// In theory, weapon can be uninitialised here,
 				// but in practice it's always set.
-				weapon->base.projectile->flags |= PROJECTILEFLAG_00000002;
+				weapon->base.projectile->flags |= PROJECTILEFLAG_00000002 | PROJECTILEFLAG_POWERED; // powered: no gravity, a straight throw
 				weapon->base.projectile->unk08c = 0.1f;
 				weapon->base.projectile->pickuptimer240 = TICKS(240);
 				weapon->base.hidden |= OBJHFLAG_THROWNKNIFE;
 			}
 		}
 	}
+	return obj != NULL;
+}
+
+void bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
+{
+	struct hand *hand = &g_Vars.currentplayer->hands[handnum % 2];
+	bgunThrowFrom(handnum, gset, &hand->muzzlepos, &hand->muzzlemat, hand->primetimer60);
 }
 
 void bgunUpdateHeldRocket(s32 handnum)
@@ -5564,6 +5776,21 @@ void bgunFreeWeapon(s32 handnum)
 				s32 spaceinclip = player->hands[handnum].clipsizes[i] - player->hands[handnum].loadedammo[i];
 				s32 index = bgunGetUnequippedReloadIndex(player->gunctrl.weaponnum);
 
+#ifndef PLATFORM_N64
+				if (modAmmoOn() && modAmmoClipWeapon(player->gunctrl.weaponnum, i)) {
+					// put away with its rounds still in it
+					if (player->hands[handnum].loadedammo[i] > 0) {
+						g_ModAmmoMem[player->gunctrl.weaponnum][handnum][i] = player->hands[handnum].loadedammo[i];
+					}
+
+					sysLogPrintf(LOG_NOTE, "ammo: put away weapon %d hand %d clip %d: %d rounds remembered",
+							player->gunctrl.weaponnum, handnum, i, g_ModAmmoMem[player->gunctrl.weaponnum][handnum][i]);
+
+					player->hands[handnum].loadedammo[i] = 0;
+					continue;
+				}
+#endif
+
 				if (index != -1) {
 #if VERSION >= VERSION_JPN_FINAL
 					player->hands[handnum].gunroundsspent[index] = (spaceinclip << 8) + 0xff;
@@ -6130,7 +6357,7 @@ void bgunEquipWeapon2(s32 handnum, s32 weaponnum)
 			g_Vars.currentplayer->gunctrl.dualwielding = true;
 		}
 	} else {
-		if (weaponnum > WEAPON_SUICIDEPILL) {
+		if (weaponnum > WEAPON_TARGETLOCATOR) {
 			weaponnum = WEAPON_UNARMED;
 		}
 
@@ -6187,6 +6414,12 @@ void bgunReloadIfPossible(s32 handnum)
 {
 	struct player *player = g_Vars.currentplayer;
 
+#ifndef PLATFORM_N64
+	if (bgunQuick()->phase != QUICK_IDLE) {
+		bgunQuick()->reloadmask |= 1 << handnum;
+		return;
+	}
+#endif
 	if (bgunGetAmmoTypeForWeapon(bgunGetWeaponNum(handnum), FUNC_PRIMARY)
 			&& player->hands[handnum].modenext == HANDMODE_NONE) {
 		player->hands[handnum].modenext = HANDMODE_RELOAD;
@@ -6477,6 +6710,9 @@ void bgunDisarm(struct prop *attackerprop)
 		}
 
 		chr = player->prop->chr;
+#ifndef PLATFORM_N64
+		bgunQuickCancel();
+#endif
 		drop = true;
 
 		// RC-P120 and cloaking device: turn off cloak if active
@@ -6734,6 +6970,9 @@ void bgunStartDetonateAnimation(s32 playernum)
 {
 	s32 prevplayernum = g_Vars.currentplayernum;
 	setCurrentPlayerNum(playernum);
+#ifndef PLATFORM_N64
+	bgunQuick()->remoteplaced = false;
+#endif
 
 	if (g_Vars.currentplayer->hands[HAND_LEFT].gset.weaponnum == WEAPON_REMOTEMINE) {
 		bgunStartAnimation(var80070200, 1, &g_Vars.currentplayer->hands[HAND_LEFT]);
@@ -7803,6 +8042,10 @@ void bgun0f0a5550(s32 handnum)
 
 #ifndef PLATFORM_N64
 	// adjust viewmodel position for different FOVs
+	if (handnum == HAND_RIGHT && bgunQuick()->phase != QUICK_IDLE && !weaponHasFlag(weaponnum, WEAPONFLAG_ONEHANDED)) {
+		sp274.x += 3.0f;
+		sp274.y -= 2.0f;
+	}
 	sp274.y -= bgunGetFovOffsetY();
 	sp274.z += bgunGetFovOffsetZ();
 #endif
@@ -11139,6 +11382,129 @@ glabel var7f1aca90
 #endif
 #else
 // Mismatch: Goal uses different codegen for accessing vertices
+#ifndef PLATFORM_N64
+static struct modeldef *bgunQuickLoad(u16 filenum)
+{
+	// Gun memory belongs to the primary. Keep the independent model in stage memory.
+	struct fileinfo saved = g_FileInfo[filenum];
+	u8 loadtype = g_LoadType;
+	g_FileInfo[filenum].loadedsize = 0;
+	g_LoadType = LOADTYPE_GUN;
+	struct modeldef *def = fileLoadToNew(filenum, FILELOADMETHOD_EXTRAMEM, LOADTYPE_GUN);
+	modelPromoteTypeToPointer(def);
+	modelPromoteOffsetsToPointers(def, 0x05000000, (uintptr_t)def);
+	modeldef0f1a7560(def, filenum, 0x05000000, def, NULL, true);
+	modelAllocateRwData(def);
+	g_FileInfo[filenum] = saved;
+	g_LoadType = loadtype;
+	return def;
+}
+
+static void bgunQuickPosition(struct weapon *weapon, struct coord *pos)
+{
+	struct quickgrenade *quick = bgunQuick();
+	f32 draw = quick->age < 8 ? (8 - quick->age) : 0;
+	pos->x = -weapon->posx;
+	pos->y = weapon->posy - bgunGetFovOffsetY() - draw;
+	pos->z = weapon->posz + bgunGetFovOffsetZ();
+}
+
+static union modelrwdata *bgunToggle(struct model *model, s32 part)
+{
+	struct modelnode *node = modelGetPart(model->definition, part);
+	return node && (node->type & 0xff) == MODELNODETYPE_TOGGLE ? modelGetNodeRwData(model, node) : NULL;
+}
+
+static void bgunQuickHide(struct model *model, s32 part)
+{
+	union modelrwdata *toggle = bgunToggle(model, part);
+	if (toggle) toggle->toggle.visible = false;
+}
+
+static Gfx *bgunQuickRender(Gfx *gdl)
+{
+	struct quickgrenade *quick = bgunQuick();
+	struct player *player = g_Vars.currentplayer;
+	struct modeldef *def = quick->models[quick->selection];
+	struct modeldef *hands = player->gunctrl.handmodeldef;
+	struct model gun = {0}, glove = {0};
+	struct anim anim = {0};
+	struct modelrenderdata rd = {NULL, true, 3};
+	Mtxf base;
+	struct coord pos;
+	s32 id = g_QuickWeapons[quick->selection];
+	struct weapon *weapon = weaponFindById(id);
+	struct weaponfunc_throw *func = weapon->functions[bgunQuickFuncNum(id)];
+
+	if (!def || !bgunIsLoaded() || !player->hands[HAND_RIGHT].visible) return gdl;
+	if (!hands) hands = quick->fallbackhands;
+	modelInit(&gun, def, gfxAllocate(def->rwdatalen * sizeof(u32)), false);
+	animInit(&anim);
+	gun.anim = &anim;
+	modelSetAnimation(&gun, func->base.fire_animation->unk02, false, quick->frame, 1, 0);
+	if (id == WEAPON_REMOTEMINE) bgunQuickHide(&gun, MODELPART_REMOTEMINE_DETONATOR);
+	bgunQuickPosition(weapon, &pos);
+	mtx4Copy(&player->hands[HAND_RIGHT].cammtx, &base);
+	mtx4SetTranslation(&pos, &base);
+	mtx00015e24(-1, &base);
+	mtx00015f04(0.1f, &base);
+	rd.unk00 = &base;
+	rd.unk10 = gfxAllocate(sizeof(Mtxf) * def->nummatrices);
+	mtx4Copy(&base, rd.unk10);
+	var8005efd8_2 = true;
+	modelSetMatricesWithAnim(&rd, &gun);
+	var8005efd8_2 = false;
+	// The stock throw, mirrored into the left hand, exactly as the right hand
+	// plays it: the wind-up drops out of view while the button is held, and
+	// the release swings in from the lower left. The grenade leaves from the
+	// animation's own hold joint, as bgunCreateThrownProjectile() does with
+	// hand->muzzlepos, so the throw starts where a vanilla throw does (mirrored)
+	// and follows the same arc.
+	// (A knife leaves from the gun's base, as a vanilla knife throw does from
+	// hand->posmtx: bgunQuickThrow() falls back to that without a pose.)
+	struct modelnode *hold = id == WEAPON_COMBATKNIFE ? NULL : modelGetPart(def, MODELPART_GUN_HOLDPOS);
+	if (hold) {
+		s32 index = modelFindNodeMtxIndex(hold, 0);
+		if (index >= 0 && index < def->nummatrices) {
+			quick->holdmatrix = gun.matrices[index];
+			quick->haspose = true;
+		}
+	}
+	rd.gdl = gdl;
+	rd.unk30 = 4;
+	rd.envcolour = ((u32)player->gunshadecol[0] << 24) | (player->gunshadecol[1] << 16)
+			| (player->gunshadecol[2] << 8) | player->gunshadecol[3];
+	rd.cullmode = CULLMODE_NONE;
+	gSPClearGeometryMode(rd.gdl++, G_CULL_BOTH);
+	gSPSetLights1(rd.gdl++, var80070090);
+	gSPLookAt(rd.gdl++, camGetLookAt());
+	gSPPerspNormalize(rd.gdl++, mtx00016dcc(0, 300));
+	mtx00016760();
+	if (quick->phase == QUICK_PRIMING) {
+		if (quick->pinned) {
+			struct modelnode *pin = modelGetPart(def, MODELPART_GRENADE_002B);
+			if (pin) {
+				s32 index = modelFindNodeMtxIndex(pin, 0);
+				if (index >= 0 && index < def->nummatrices) mtx00015f04(0, &gun.matrices[index]);
+			}
+		}
+		modelRender(&rd, &gun);
+	}
+	if (hands) {
+		modelInit(&glove, hands, gfxAllocate(hands->rwdatalen * sizeof(u32)), false);
+		glove.matrices = gun.matrices;
+		bgunQuickHide(&glove, MODELPART_HAND_LEFT);
+		modelUpdateRelations(&glove);
+		modelRender(&rd, &glove);
+	}
+	mtxF2LBulk(gun.matrices, def->nummatrices);
+	mtx00016784();
+	gSPClearGeometryMode(rd.gdl++, G_CULL_BOTH);
+	gSPPerspNormalize(rd.gdl++, viGetPerspScale());
+	return rd.gdl;
+}
+#endif
+
 void bgunRender(Gfx **gdlptr)
 {
 	Gfx *gdl = *gdlptr;
@@ -11158,6 +11524,14 @@ void bgunRender(Gfx **gdlptr)
 		}
 		return;
 	}
+
+#ifndef PLATFORM_N64
+	// MOD: once the stage has ended (end screen over the frozen level) the gun
+	// memory is no longer the player's: drawing it crashed in modelRender.
+	if (g_MainIsEndscreen) {
+		return;
+	}
+#endif
 
 #ifdef PLATFORM_N64 // TODO
 	gdl = zbufSaveArtifactDepths(gdl);
@@ -11200,6 +11574,12 @@ void bgunRender(Gfx **gdlptr)
 
 		hand = player->hands + i;
 
+#ifndef PLATFORM_N64
+		if (i == HAND_LEFT && bgunQuick()->phase != QUICK_IDLE) {
+			gdl = bgunQuickRender(gdl);
+			continue;
+		}
+#endif
 		weaponnum = bgunGetWeaponNum2(i);
 
 		if (hand->visible) {
@@ -11367,10 +11747,24 @@ void bgunRender(Gfx **gdlptr)
 
 				hand->handmodel.matrices = hand->gunmodel.matrices;
 
+#ifndef PLATFORM_N64
+				union modelrwdata *support = NULL;
+				bool showSupport = false;
+				if (i == HAND_RIGHT && bgunQuick()->phase != QUICK_IDLE) {
+					support = bgunToggle(&hand->handmodel, MODELPART_HAND_LEFT);
+					if (support) {
+						showSupport = support->toggle.visible;
+						support->toggle.visible = false;
+					}
+				}
+#endif
 				modelUpdateRelations(&hand->handmodel);
 
 				renderdata.envcolour = colour;
 				modelRender(&renderdata, &hand->handmodel);
+#ifndef PLATFORM_N64
+				if (support) support->toggle.visible = showSupport;
+#endif
 				renderdata.envcolour = prevcolour;
 			}
 #ifndef PLATFORM_N64
@@ -11991,6 +12385,9 @@ s32 bgunConsiderToggleGunFunction(s32 usedowntime, bool trigpressed, bool fromac
 	case WEAPON_RCP120:
 #ifndef PLATFORM_N64
 		// very special alt-button handling for RCP-120's cloaking
+		sysLogPrintf(LOG_NOTE, "rcp120: alt pressed (trig %d, extcontrols %d, dedicated %d, cloak %d, loaded ammo %d)",
+				trigpressed, extcontrols, fromdedicatedbutton, (g_Vars.currentplayer->devicesactive & DEVICE_CLOAKRCP120) != 0,
+				g_Vars.currentplayer->hands[HAND_RIGHT].loadedammo[0]);
 		if (!trigpressed && extcontrols && fromdedicatedbutton) {
 			if (g_Vars.currentplayer->devicesactive & DEVICE_CLOAKRCP120) {
 				g_Vars.currentplayer->devicesactive &= ~DEVICE_CLOAKRCP120;
@@ -12096,6 +12493,155 @@ bool bgunIsUsingSecondaryFunction(void)
 
 	return false;
 }
+
+#ifndef PLATFORM_N64
+static s32 bgunQuickCount(s32 selection)
+{
+	s32 id = g_QuickWeapons[selection];
+	return invHasSingleWeaponIncAllGuns(id) ? bgunGetAmmoCount(bgunGetAmmoTypeForWeapon(id, FUNC_PRIMARY)) : 0;
+}
+
+static void bgunQuickSelect(bool cycle)
+{
+	struct quickgrenade *quick = bgunQuick();
+	for (s32 i = 0; i < ARRAYCOUNT(g_QuickWeapons); i++) {
+		s32 selection = (quick->selection + i + (cycle ? 1 : 0)) % ARRAYCOUNT(g_QuickWeapons);
+		if (bgunQuickCount(selection) > 0) {
+			quick->selection = selection;
+			break;
+		}
+	}
+}
+
+static void bgunQuickThrow(struct weapon *weapon)
+{
+	struct quickgrenade *quick = bgunQuick();
+	struct player *player = g_Vars.currentplayer;
+	struct gset gset = { .weaponnum = g_QuickWeapons[quick->selection], .weaponfunc = bgunQuickFuncNum(g_QuickWeapons[quick->selection]) };
+	s32 type = weapon->ammos[0]->type;
+	struct coord pos;
+	Mtxf *orientation = camGetProjectionMtxF();
+	if (quick->haspose) {
+		orientation = &quick->holdmatrix;
+		pos.x = orientation->m[3][0];
+		pos.y = orientation->m[3][1];
+		pos.z = orientation->m[3][2];
+	} else {
+		bgunQuickPosition(weapon, &pos);
+	}
+	mtx4TransformVecInPlace(camGetProjectionMtxF(), &pos);
+	if (!bgunQuickCount(quick->selection)
+			|| !bgunThrowFrom(HAND_LEFT, &gset, &pos, orientation, (s32)quick->age)) return;
+	if (gset.weaponnum == WEAPON_REMOTEMINE) quick->remoteplaced = true;
+	if (player->ammoheldarr[type] > 0) {
+		player->ammoheldarr[type]--;
+	} else {
+		for (s32 i = 0; i < 2; i++) {
+			struct hand *hand = &player->hands[i];
+			if (hand->inuse && hand->gset.weaponnum == gset.weaponnum && hand->loadedammo[0] > 0) {
+				hand->loadedammo[0]--;
+				break;
+			}
+		}
+	}
+}
+
+void bgunQuickTick(bool allow, u32 buttons, u32 pressed)
+{
+	struct quickgrenade *quick = bgunQuick();
+	struct player *player = g_Vars.currentplayer;
+	if (!allow || player->isdead || player->gunctrl.passivemode || g_Vars.tickmode != TICKMODE_NORMAL
+			|| player->pausemode != PAUSEMODE_UNPAUSED || !bgunIsLoaded()) {
+		bgunQuickCancel();
+		return;
+	}
+	if (quick->phase == QUICK_IDLE) {
+		bgunQuickSelect((pressed & BUTTON_CYCLE_GRENADE) != 0);
+		struct hand *primary = &player->hands[HAND_RIGHT];
+		if (primary->state == HANDSTATE_ATTACK && weaponHasFlag(primary->gset.weaponnum, WEAPONFLAG_THROWABLE)) {
+			return;
+		}
+		if (!(pressed & BUTTON_QUICK_GRENADE) || !bgunQuickCount(quick->selection)
+				|| player->gunctrl.switchtoweaponnum >= 0 || !player->hands[HAND_RIGHT].visible
+				|| (player->hands[HAND_LEFT].inuse && player->hands[HAND_LEFT].state != HANDSTATE_IDLE
+					&& player->hands[HAND_LEFT].state != HANDSTATE_RELOAD)
+				|| (player->hands[HAND_RIGHT].state != HANDSTATE_IDLE
+					&& player->hands[HAND_RIGHT].state != HANDSTATE_ATTACK
+					&& player->hands[HAND_RIGHT].state != HANDSTATE_RELOAD)) {
+			return;
+		}
+		// Throwing while reloading is allowed and cancels the reload
+		for (s32 h = 0; h < 2; h++) {
+			if (player->hands[h].state == HANDSTATE_RELOAD) {
+				bgunSetState(h, HANDSTATE_IDLE);
+			}
+			if (player->hands[h].modenext == HANDMODE_RELOAD) {
+				player->hands[h].modenext = HANDMODE_NONE;
+			}
+		}
+		s32 id = g_QuickWeapons[quick->selection];
+		if (!quick->models[quick->selection]) {
+			quick->models[quick->selection] = bgunQuickLoad(weaponGetFileNum(id));
+		}
+		if (!player->gunctrl.handmodeldef && !quick->fallbackhands) {
+			s32 body, head;
+			playerChooseBodyAndHead(&body, &head, NULL);
+			quick->fallbackhands = bgunQuickLoad(g_HeadsAndBodies[body].handfilenum);
+		}
+		quick->phase = QUICK_PRIMING;
+		quick->age = quick->frame = 0;
+		quick->released = quick->pinned = quick->throwing = false;
+		quick->haspose = false;
+	}
+
+	struct weapon *weapon = weaponFindById(g_QuickWeapons[quick->selection]);
+	struct weaponfunc_throw *func = weapon->functions[bgunQuickFuncNum(g_QuickWeapons[quick->selection])];
+	struct guncmd *script = func->base.fire_animation;
+	f32 previous = quick->frame;
+	f32 end = animGetNumFrames(script->unk02) - 1;
+	quick->frame += g_Vars.lvupdate60freal;
+	quick->age += g_Vars.lvupdate60freal;
+	if (quick->phase == QUICK_RECOVERY) {
+		if (quick->frame >= end) {
+			u8 reload = quick->reloadmask;
+			bgunQuickCancel();
+			for (s32 i = 0; i < 2; i++) {
+				if (reload & (1 << i)) bgunReloadIfPossible(i);
+			}
+			bgunQuickSelect(false);
+		}
+		return;
+	}
+
+	if (!(buttons & BUTTON_QUICK_GRENADE)) quick->released = true;
+	bool expired = g_QuickWeapons[quick->selection] == WEAPON_GRENADE && quick->age >= func->activatetime60;
+	for (struct guncmd *cmd = script; cmd->type != GUNCMD_END; cmd++) {
+		if (cmd->unk02 > quick->frame) continue;
+		switch (cmd->type) {
+		case GUNCMD_POPOUTSACKOFPILLS:
+			quick->pinned = true;
+			break;
+		case GUNCMD_PLAYSOUND:
+			if (previous < cmd->unk02) sndStart(var80095200, cmd->unk04, NULL, -1, -1, -1, -1, -1);
+			break;
+		case GUNCMD_WAITFORZRELEASED:
+			if (quick->released || expired) {
+				quick->throwing = true;
+			} else {
+				quick->frame = cmd->unk02;
+			}
+			break;
+		case GUNCMD_WAITTIME:
+			if (cmd->unk04 == 2) quick->phase = QUICK_RECOVERY;
+			break;
+		}
+	}
+	if (expired || quick->phase == QUICK_RECOVERY) {
+		bgunQuickThrow(weapon);
+		quick->phase = QUICK_RECOVERY;
+	}
+}
+#endif
 
 /**
  * Tick gun-related things during first-person gameplay.
@@ -12218,13 +12764,25 @@ void bgunTickGameplay(bool triggeron)
 		player->playertrigtime240 = 0;
 	}
 
+#ifndef PLATFORM_N64
+	bool quickactive = bgunQuick()->phase != QUICK_IDLE;
+	if (quickactive) {
+		gunsfiring[HAND_RIGHT] = triggeron && (player->gunctrl.weaponnum != g_QuickWeapons[bgunQuick()->selection]);
+		gunsfiring[HAND_LEFT] = false;
+	}
+#endif
 	bgunSetTriggerOn(HAND_RIGHT, gunsfiring[0]);
 	bgunSetTriggerOn(HAND_LEFT, gunsfiring[1]);
 
 	if (g_Vars.tickmode == TICKMODE_NORMAL && g_Vars.lvupdate240 > 0) {
 		bgunTickHand(HAND_RIGHT);
-		bgunTickHand(HAND_LEFT);
-		bgunTickSwitch();
+#ifndef PLATFORM_N64
+		if (!quickactive)
+#endif
+		{
+			bgunTickHand(HAND_LEFT);
+			bgunTickSwitch();
+		}
 
 		if (cheatIsActive(CHEAT_UNLIMITEDAMMONORELOADS)) {
 			s32 i;
@@ -13065,6 +13623,27 @@ Gfx *bgunDrawHud(Gfx *gdl)
 		xpos += 15;
 	}
 
+#ifndef PLATFORM_N64
+	{
+		s32 selection = bgunQuick()->selection;
+		s32 count = bgunQuickCount(selection);
+		char label[80];
+		const char *name = bgunGetName(g_QuickWeapons[selection]);
+		snprintf(label, sizeof(label), "%.*s x%d\n", (int)strcspn(name, "\r\n"), name, count);
+		textMeasure(&textheight, &textwidth, label, g_CharsHandelGothicXs, g_FontHandelGothicXs, 0);
+		bool align = playercount == 1 || (playercount == 2 && optionsGetScreenSplit() == SCREENSPLIT_HORIZONTAL);
+		if (align) {
+			gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeL);
+		}
+		x = viGetViewLeft() / g_ScaleX + (playercount == 1 ? 24 : 9);
+		y = bottom - textheight + 1;
+		gdl = textRenderProjected(gdl, &x, &y, label, g_CharsHandelGothicXs, g_FontHandelGothicXs,
+				count ? 0x55ffffff : 0x999999a0, viGetWidth(), viGetHeight(), 0, 0);
+		if (align) {
+			gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT, g_HudAlignModeR);
+		}
+	}
+#endif
 	// Draw function square
 	if (funcnum == FUNC_SECONDARY && ctrl->fnfader < 255) {
 		if (ctrl->fnfader < 128) {
@@ -13507,6 +14086,20 @@ void bgun0f0abd30(s32 handnum)
 			}
 
 			hand->loadedammo[i] = 0;
+
+#ifndef PLATFORM_N64
+			if (modAmmoOn() && modAmmoClipWeapon(hand->gset.weaponnum, i)) {
+				s32 remembered = g_ModAmmoMem[hand->gset.weaponnum][handnum][i];
+
+				if (remembered > 0) {
+					hand->loadedammo[i] = remembered > hand->clipsizes[i] ? hand->clipsizes[i] : remembered;
+					g_ModAmmoMem[hand->gset.weaponnum][handnum][i] = 0;
+				}
+
+				sysLogPrintf(LOG_NOTE, "ammo: equip weapon %d hand %d clip %d: remembered %d, loaded %d",
+						hand->gset.weaponnum, handnum, i, remembered, hand->loadedammo[i]);
+			}
+#endif
 		}
 	}
 

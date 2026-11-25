@@ -1,5 +1,14 @@
 #include <ultra64.h>
+#include "game/modrun.h"
+#include "game/modcareer.h"
+#include "game/modrandom.h"
+#include "game/modoptions.h"
+#include "game/modspawnedit.h"
 #include "constants.h"
+#include "prcompat.h"
+#ifndef PLATFORM_N64
+#include "system.h"
+#endif
 #include "game/bondeyespy.h"
 #include "game/bondmove.h"
 #include "game/cheats.h"
@@ -73,6 +82,7 @@
 #ifndef PLATFORM_N64
 #include "namebanner.h" // MOD: name banner
 #include "bodyview.h" // MOD: body awareness
+#include "gelevels.h"
 #endif
 #ifndef PLATFORM_N64
 #include "video.h"
@@ -209,6 +219,50 @@ s16 g_DeathAnimations[] = {
 };
 
 s32 g_NumDeathAnimations = 0;
+
+/**
+ * Where to spawn when the setup offers no spawn pads.
+ *
+ * Where the chr already is if it is somewhere, which is where a respawn after
+ * a death leaves it; otherwise the first pad with a floor under it.
+ */
+static f32 playerChooseSpawnFallback(struct coord *dstpos, RoomNum *dstrooms, struct prop *prop)
+{
+	static s32 logged = 0;
+	RoomNum room;
+	s32 i;
+
+	if (!logged) {
+		logged = 1;
+		sysLogPrintf(LOG_WARNING, "spawn: the setup has no spawn pads; spawning in place or on the first pad with a floor");
+	}
+
+	if (prop == NULL && g_Vars.currentplayer) {
+		prop = g_Vars.currentplayer->prop;
+	}
+
+	if (prop && prop->rooms[0] >= 0) {
+		*dstpos = prop->pos;
+		roomsCopy(prop->rooms, dstrooms);
+		return 0;
+	}
+
+	for (i = 0; g_PadsFile && i < g_PadsFile->numpads; i++) {
+		if (modRandomPadSpawnPos(i, dstpos, &room)) {
+			dstrooms[0] = room;
+			dstrooms[1] = -1;
+			return 0;
+		}
+	}
+
+	dstpos->x = 0;
+	dstpos->y = 0;
+	dstpos->z = 0;
+	dstrooms[0] = 0;
+	dstrooms[1] = -1;
+
+	return 0;
+}
 
 /**
  * Choose which location to spawn into from the given pads. Write the position
@@ -540,7 +594,28 @@ void playerStartNewLife(void)
 
 	hudmsgsSetOn(0xffffffff);
 
-	angle = M_BADTAU - scenarioChooseSpawnLocation(30, &pos, rooms, g_Vars.currentplayer->prop); // var7f1ad534
+#ifndef PLATFORM_N64
+	if (modRespawnIsRespawning() && modRespawnTakeSpot(&pos, rooms, &angle)) {
+		// Mission Respawn: where the player fell, facing the way they
+		// faced; or, with no floor there, where they last stood on one
+		// (modrespawn.c). With neither, the mission's spawn pad below.
+	} else if (modRunTakeSpawn(&pos, rooms, &angle)) {
+		// A Randomizer run: the room this hop landed in, which is the whole
+		// of what a hop is. See modrun.c.
+	} else if (g_NetMode == NETMODE_SERVER && netMigrateTakeSpawn(&pos, rooms, &angle)) {
+		// netplay: a match carried on under a new host gives the player its
+		// life back where the old host last had it (netmigrate.c)
+	} else if (g_NetMode == NETMODE_SERVER && netCoopJoinSpawn(&pos, rooms, &angle)) {
+		// netplay: a co-op mission joined in progress starts on a living
+		// player's spot, not at the mission's start (netcoop.c)
+	} else if (g_NetMode != NETMODE_NONE && g_Vars.coopplayernum >= 0) {
+		// netplay: the pad itself, a player standing on it no obstacle
+		angle = netCoopSpawnPick(&pos, rooms);
+	} else
+#endif
+	{
+		angle = M_BADTAU - scenarioChooseSpawnLocation(30, &pos, rooms, g_Vars.currentplayer->prop); // var7f1ad534
+	}
 
 	groundy = cdFindGroundInfoAtCyl(&pos, 30, rooms,
 			&g_Vars.currentplayer->floorcol,
@@ -607,6 +682,15 @@ void playerStartNewLife(void)
 
 	invGiveSingleWeapon(WEAPON_UNARMED);
 
+	// A Randomizer run's landing after the first: the player carries what
+	// they picked up and nothing else, so the map's own intro kit is not
+	// handed out on top (modRunSkipsMapKit()).
+#ifndef PLATFORM_N64
+#define MODRUN_SKIPS_MAP_KIT() modRunSkipsMapKit()
+#else
+#define MODRUN_SKIPS_MAP_KIT() false
+#endif
+
 	if (cmd) {
 		if (cmd);
 		if (cmd);
@@ -664,6 +748,22 @@ void playerStartNewLife(void)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// A Randomizer run: the guns and the ammunition carried through the
+	// portal (the map's own intro kit is only handed out at the first
+	// landing). Here
+	// rather than from the tick because a gun in a hand is a model to load and
+	// the load runs from the spawn below.
+	modRunRestoreInventory();
+	modRandomDebugGiveGrenades();
+
+	// netplay: the guns and ammo a player of a match carried on under a new
+	// host had (netmigrate.c)
+	if (g_NetMode == NETMODE_SERVER) {
+		netMigrateRestoreInventory();
+	}
+#endif
+
 	if (g_Vars.coopplayernum >= 0 && g_Vars.currentplayer->stealhealth > 0) {
 		g_Vars.currentplayer->bondhealth = g_Vars.currentplayer->stealhealth;
 		g_Vars.currentplayer->oldhealth = 0;
@@ -684,6 +784,21 @@ void playerStartNewLife(void)
 	if (g_Vars.currentplayer->prop->chr) {
 		g_Vars.currentplayer->prop->chr->chrflags &= ~CHRCFLAG_HIDDEN;
 	}
+
+#ifndef PLATFORM_N64
+	if (modRespawnIsRespawning()) {
+		modRespawnEnd();
+	}
+
+	// And the damage the run has taken so far, after playerSpawn() has set the
+	// shield back to zero.
+	modRunRestoreHealth();
+
+	// netplay: a match carried on: the player's health and shield as they were
+	if (g_NetMode == NETMODE_SERVER) {
+		netMigrateRestoreHealth();
+	}
+#endif
 }
 
 void playerLoadDefaults(void)
@@ -949,6 +1064,99 @@ bool playerSpawnAnti(struct chrdata *hostchr, bool force)
 	return false;
 }
 
+/**
+ * Perfect Random's hands at a spawn (port: carried over from the Dabs fork's
+ * playerSpawnWeapons()). A Randomizer run's landing keeps the guns the player
+ * stepped through the portal with; a Random mission starts with exactly the
+ * gun and utility dealt for its seed. Returns false when neither applies, and
+ * the stage's own defaults go in the hands as before.
+ */
+static bool playerSpawnRandomWeapons(void)
+{
+	if (modRunIsLanding()) {
+		bgunEquipWeapon2(HAND_LEFT, modRunGetHandWeapon(HAND_LEFT));
+		bgunEquipWeapon2(HAND_RIGHT, modRunGetHandWeapon(HAND_RIGHT));
+		return true;
+	}
+
+	if (modRandomGetStartingWeapon() > WEAPON_NONE) {
+		const s32 weaponnum = modRandomGetStartingWeapon();
+		const s32 ammotype = bgunGetAmmoTypeForWeapon(weaponnum, FUNC_PRIMARY);
+		s32 totalammo = ammotype > 0 ? bgunGetCapacityByAmmotype(ammotype) : 0;
+		s32 utility = modRandomGetUtilityWeapon();
+		s32 utilityammo = bgunGetAmmoTypeForWeapon(utility, FUNC_PRIMARY);
+
+		// A mission starts with the dealt pistol, utility and Target Locator, and nothing else
+		// the stage's intro, an earlier mission or a cheat left in the
+		// inventory (boons are handed out later, once the player is in control).
+		const bool fresh = g_Vars.lvframenum < 5;
+
+		if (fresh) {
+			bgunModAmmoReset();
+			const s32 keep[3] = { weaponnum, utility, WEAPON_TARGETLOCATOR };
+			s32 t;
+
+			invRemoveWeaponsExcept(keep, ARRAYCOUNT(keep));
+
+			for (t = 0; t < ARRAYCOUNT(g_Vars.currentplayer->ammoheldarr); t++) {
+				g_Vars.currentplayer->ammoheldarr[t] = 0;
+			}
+		}
+
+		invGiveSingleWeapon(weaponnum);
+
+		if (utility > WEAPON_NONE) {
+			invGiveSingleWeapon(utility);
+		}
+
+		invGiveSingleWeapon(WEAPON_TARGETLOCATOR);
+
+		if (utilityammo > 0 && utilityammo != ammotype) {
+			s32 capacity = bgunGetCapacityByAmmotype(utilityammo);
+			s32 want = utility == WEAPON_NBOMB ? 3 : utility == WEAPON_TRANQUILIZER ? 48 : utility == WEAPON_CROSSBOW ? 30 : 8; // N-Bombs come three to a start; the tranquilizer comes 8 in the gun + 40 spare; the crossbow 30 bolts
+
+			bgunSetAmmoQuantity(utilityammo, capacity < want ? capacity : want);
+		}
+
+		// Gauntlet: each mission starts with 2 of a grenade, timed mine or
+		// proximity mine, given after the strip above so it survives it and is
+		// a fresh 2 every mission (on top of the utility's own if it shares the ammo).
+		if (fresh && modCareerIsOn() && !modRunIsOn()) {
+			modRunGiveStartingGrenades();
+		}
+		// The debug "max grenades" setting is handed out here too, after the strip,
+		// or the strip wipes it on every mission (the call above only runs before it).
+		if (fresh) {
+			modRandomDebugGiveGrenades();
+		}
+
+		g_DefaultWeapons[HAND_LEFT] = WEAPON_NONE;
+		g_DefaultWeapons[HAND_RIGHT] = weaponnum;
+		bgunEquipWeapon2(HAND_LEFT, WEAPON_NONE);
+		bgunEquipWeapon2(HAND_RIGHT, weaponnum);
+
+		if (ammotype > 0 && totalammo > 0) {
+			s32 reserve;
+
+			if (totalammo > 100) {
+				totalammo = 100;
+			}
+
+			reserve = totalammo - g_Vars.currentplayer->hands[HAND_RIGHT].loadedammo[FUNC_PRIMARY];
+
+			if (reserve < 0) {
+				reserve = 0;
+			}
+
+			bgunSetAmmoQuantity(ammotype, reserve);
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
 void playerSpawn(void)
 {
 	f32 xdiff;
@@ -1127,7 +1335,9 @@ void playerSpawn(void)
 				invGiveSingleWeapon(WEAPON_NIGHTVISION);
 			}
 
-			if (g_Vars.normmplayerisrunning
+			if (playerSpawnRandomWeapons()) {
+				// Perfect Random dealt the hands
+			} else if (g_Vars.normmplayerisrunning
 					&& (g_MpSetup.options & MPOPTION_SPAWNWITHWEAPON)
 					&& g_MpSetup.weapons[0] != MPWEAPON_NONE
 					&& g_MpSetup.weapons[0] != MPWEAPON_DISABLED
@@ -1163,6 +1373,13 @@ void playerSpawn(void)
 #endif
 		}
 	}
+#ifndef PLATFORM_N64
+	else {
+		// A mission: the hands are playerReset()'s business, except that a
+		// Perfect Random mission or run landing deals its own
+		playerSpawnRandomWeapons();
+	}
+#endif
 
 	playerUpdatePerimInfo();
 }
@@ -1186,6 +1403,16 @@ void playerResetBond(struct playerbond *pb, struct coord *pos)
 	pb->unk00.z = 1;
 
 	pb->radius = 30;
+
+#ifndef PLATFORM_N64
+	// MOD: GoldenEye levels were built for a narrower player: Perfect Dark's
+	// 30 units either side of a GoldenEye doorway, about 70 wide, leaves a
+	// couple of units to spare and a doorway cut a little narrow by the
+	// level's rounding is shut. Twenty is GoldenEye's own width in these units.
+	if (gelevelsIsStage(g_Vars.stagenum)) {
+		pb->radius = 20;
+	}
+#endif
 }
 
 void playersTickAllChrBodies(void)
@@ -1516,13 +1743,13 @@ void playerTickChrBody(void)
 			} else if (sp60) {
 				headmodeldef = func0f18e57c(headnum, &headnum);
 			} else if (g_Vars.normmplayerisrunning && IS8MB()) {
-				g_HeadsAndBodies[headnum].modeldef = modeldefLoadToNew(g_HeadsAndBodies[headnum].filenum);
+				g_HeadsAndBodies[headnum].modeldef = modeldefLoadHead(headnum);
 				headmodeldef = g_HeadsAndBodies[headnum].modeldef;
 				g_FileInfo[g_HeadsAndBodies[headnum].filenum].loadedsize = 0;
 				bodyCalculateHeadOffset(headmodeldef, headnum, bodynum);
 			} else {
 				if (g_HeadsAndBodies[headnum].modeldef == NULL) {
-					g_HeadsAndBodies[headnum].modeldef = modeldefLoadToNew(g_HeadsAndBodies[headnum].filenum);
+					g_HeadsAndBodies[headnum].modeldef = modeldefLoadHead(headnum);
 				}
 
 				headmodeldef = g_HeadsAndBodies[headnum].modeldef;
@@ -1924,6 +2151,14 @@ void playerExecutePreparedWarp(void)
 
 void playerStartCutscene2(void)
 {
+#ifndef PLATFORM_N64
+	s32 previous = g_Vars.currentplayernum;
+	for (s32 i = 0; i < PLAYERCOUNT(); i++) {
+		setCurrentPlayerNum(i);
+		bgunQuickCancel();
+	}
+	setCurrentPlayerNum(previous);
+#endif
 	playerSetTickMode(TICKMODE_CUTSCENE);
 	g_PlayerTriggerGeFadeIn = false;
 	bmoveSetModeForAllPlayers(MOVEMODE_CUTSCENE);
@@ -2379,6 +2614,9 @@ void playerTickPauseMenu(void)
 
 void playerPause(s32 root)
 {
+#ifndef PLATFORM_N64
+	bgunQuickCancel();
+#endif
 	g_GlobalMenuRoot = root;
 
 	if (g_Vars.currentplayer->pausemode == PAUSEMODE_UNPAUSED) {
@@ -3324,6 +3562,16 @@ void playerTick(bool arg0)
 	f32 aspectratio;
 	f32 f20;
 
+#ifndef PLATFORM_N64
+	// Randomizer: the mission's first life is moved to the start the roll
+	// chose, on the first frame the player has control.
+	modRandomTick();
+
+	// A Randomizer run: place the landing, watch the objective, and watch for
+	// the door out of the room, which is the portal to the next map.
+	modRunTick();
+#endif
+
 	g_ViRes = g_HiResEnabled;
 
 	if ((g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) && PLAYERCOUNT() > 1) {
@@ -3431,7 +3679,7 @@ void playerTick(bool arg0)
 					u32 buttons = arg0 ? joyGetButtons(contpad1, 0xffffffff) : 0;
 
 #ifndef PLATFORM_N64
-					if (arg0 && inputKeyJustPressed(VK_ESCAPE)) {
+					if (arg0 && !modSpawnEditEatsEscape() && inputKeyJustPressed(VK_ESCAPE)) {
 						buttons |= START_BUTTON;
 					}
 #endif
@@ -3936,6 +4184,7 @@ void playerTick(bool arg0)
 				g_Vars.currentplayer->prop->rooms);
 
 		if (g_Vars.normmplayerisrunning == false
+				&& !modRandomIsOn()
 				&& g_MissionConfig.iscoop
 				&& g_Vars.numaibuddies > 0
 				&& !g_Vars.aibuddiesspawned
@@ -4365,7 +4614,27 @@ void playerTick(bool arg0)
 
 		if (g_Vars.currentplayer->redbloodfinished && g_Vars.currentplayer->deathanimfinished) {
 			if (g_Vars.mplayerisrunning == false) {
-				mainEndStage();
+#ifndef PLATFORM_N64
+				// Mission Respawn: a new life once the death's fade to black
+				// has finished, instead of the end of the stage
+				if (modRunIsOn()) {
+					// A Randomizer run ends at its own pace: modRunTick() has
+					// the score up and takes the player back to the menu when
+					// it has been read. The stage must not end under it, or
+					// the endscreen arrives over the top of the run's score
+					// and names the map's own objectives.
+				} else if (modRespawnCanRespawn()) {
+					if (playerIsFadeComplete()) {
+						modRespawnBegin();
+					}
+				} else if (geDeathCamHolds()) {
+					// GoldenEye's death replay first: the mission ends when
+					// its last fade to black does (gedeathcam.c)
+				} else
+#endif
+				{
+					mainEndStage();
+				}
 			} else if (g_Vars.coopplayernum >= 0) {
 				if (g_Vars.currentplayer == g_Vars.bond
 						&& g_Vars.coop->isdead
@@ -5008,6 +5277,9 @@ Gfx *playerRenderHud(Gfx *gdl)
 
 #if VERSION >= VERSION_NTSC_1_0
 		gdl = radarRender(gdl);
+#ifndef PLATFORM_N64
+		gdl = radarRenderWorldObjectiveMarkers(gdl);
+#endif
 		gdl = hudmsgsRender(gdl);
 #else
 		gdl = hudmsgsRender(gdl);
@@ -5016,6 +5288,9 @@ Gfx *playerRenderHud(Gfx *gdl)
 #ifndef PLATFORM_N64
 		// MOD: name banner - the player's name above the pickup messages (off by default)
 		gdl = nameBannerRender(gdl);
+		gdl = modCareerRenderHudNames(gdl);
+		gdl = modRandomDebugRender(gdl);
+		gdl = modSpawnEditRender(gdl); // Spawn Customizer markers
 #endif
 
 		gdl = playerDrawStoredFade(gdl);
@@ -5078,6 +5353,11 @@ void playerDie(bool force)
 
 void playerDieByShooter(u32 shooter, bool force)
 {
+	// Kill floors and other forced deaths bypass ordinary invincibility.
+	if (modSpawnEditIsOn()) {
+		return;
+	}
+
 #if VERSION >= VERSION_NTSC_1_0
 	if (!g_Vars.currentplayer->isdead && (force || !g_Vars.currentplayer->invincible))
 #else
@@ -5104,6 +5384,9 @@ void playerDieByShooter(u32 shooter, bool force)
 			currentPlayerDropAllItems();
 		}
 
+#ifndef PLATFORM_N64
+		bgunQuickCancel();
+#endif
 		g_Vars.currentplayer->isdead = true;
 		g_Vars.currentplayer->bonddie = g_Vars.currentplayer->bond2;
 		g_Vars.currentplayer->thetadie = g_Vars.currentplayer->vv_theta;

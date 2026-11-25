@@ -15,6 +15,7 @@
 #include "game/lv.h"
 #include "game/music.h"
 #include "game/mplayer/ingame.h"
+#include "game/modcareer.h"
 #include "game/mplayer/setup.h"
 #include "game/challenge.h"
 #include "game/training.h"
@@ -608,6 +609,19 @@ void menuTick(void)
 		} else {
 			switch (g_MenuData.root) {
 			case MENUROOT_ENDSCREEN:
+#ifndef PLATFORM_N64
+				if (modCareerLeaveToGauntletPage()) {
+					// a Perfect Random Gauntlet's closing screen: back to
+					// the Institute, where the Gauntlet page is opened
+					g_Vars.mplayerisrunning = false;
+					g_Vars.normmplayerisrunning = false;
+					g_Vars.lvmpbotlevel = 0;
+					titleSetNextStage(STAGE_CITRAINING);
+					setNumPlayers(1);
+					titleSetNextMode(TITLEMODE_SKIP);
+					mainChangeToStage(STAGE_CITRAINING);
+				} else
+#endif
 				if (g_Vars.restartlevel) {
 					mainChangeToStage(mainGetStageNum());
 				} else {

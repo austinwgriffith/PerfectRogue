@@ -4,6 +4,14 @@
 #include "data.h"
 #include "types.h"
 
+#ifdef PLATFORM_N64
+#define TEX_CACHE_KEY(tex) ((tex)->texturenum)
+#else
+// g_TexCacheItems holds a texture's lod sizes by number, and a Perfect Random
+// bank head's copy of texture N is a second texture under the same number
+#define TEX_CACHE_KEY(tex) ((tex)->texturenum | ((s32)(tex)->srcmod << 16))
+#endif
+
 void func0f16e810(u32 arg0);
 s32 texInflateZlib(u8 *src, u8 *dst, bool arg2, s32 forcenumimages, struct texpool *pool, s32 unusedarg);
 s32 texAlignIndices(u8 *arg0, s32 width, s32 height, s32 format, u8 *dst);

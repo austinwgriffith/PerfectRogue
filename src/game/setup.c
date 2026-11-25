@@ -1,5 +1,11 @@
+#include <string.h>
 #include <ultra64.h>
+#include "game/modrun.h"
+#include "game/modrandom.h"
+#include "game/modoptions.h"
+#include "game/modalarm.h"
 #include "constants.h"
+#include "prcompat.h"
 #ifdef PD_PHYSICS
 #include "ragdoll.h" // MOD: ragdoll physics
 #endif
@@ -39,6 +45,11 @@
 #include "lib/collision.h"
 #include "data.h"
 #include "types.h"
+#include "levelgenstage.h"
+#ifndef PLATFORM_N64
+#include "gelevels.h"
+#include "modloader.h"
+#endif
 
 s32 g_SetupCurMpLocation;
 
@@ -177,6 +188,7 @@ u32 var80061bec = 0x00000000;
 void propsReset(void)
 {
 	s32 i;
+	liftResetPlayerCalls();
 
 	for (i = 0; i < ARRAYCOUNT(g_Lifts); i++) {
 		g_Lifts[i] = NULL;
@@ -187,6 +199,12 @@ void propsReset(void)
 #endif
 
 	g_MaxWeaponSlots = 50;
+
+	s32 warzone = modRandomGetWarzoneReserve();
+	if (warzone > 0) {
+		// Warzone arrives alongside the usual reinforcement waves.
+		g_MaxWeaponSlots += warzone + modGetAlertedGuards() * (modIsAkimboForGuards() ? 2 : 1);
+	}
 	g_MaxHatSlots = 10;
 	g_MaxAmmoCrates = 20;
 	g_MaxDebrisSlots = 15;
@@ -208,6 +226,8 @@ void propsReset(void)
 	g_AlarmTimer = 0;
 	g_AlarmAudioHandle = NULL;
 	g_AlarmSpeakerWeight = 64;
+	modAlarmReset();
+	modRespawnReset();
 
 	g_GasReleaseTimer240 = 0;
 	g_GasReleasing = false;
@@ -402,6 +422,29 @@ void setupCreateObject(struct defaultobj *obj, s32 cmdindex)
 	u32 stack;
 	struct chrdata *chr;
 	struct prop *prop;
+
+#ifndef PLATFORM_N64
+	// Skip imported armor at spawn time so cached GoldenEye setups work too.
+	if (obj->type == OBJTYPE_SHIELD
+			&& (gelevelsIsStage(g_Vars.stagenum) || modloaderStageIsRemake(g_Vars.stagenum)
+				|| modloaderStageIsMission(g_Vars.stagenum))) {
+		obj->prop = NULL;
+		return;
+	}
+
+	enum {
+		GE_MODEL_LARGE_WOOD_CRATE = MODEL_REMAKE_FIRST + 79, // Pwood_lg_crate1Z
+		GE_MODEL_SMALL_WOOD_CRATE = MODEL_REMAKE_FIRST + 83, // Pwood_sm_crate5Z
+		BUNKER_WOOD_CRATE_HEALTH = 6000,
+	};
+	if (obj->type == OBJTYPE_BASIC && obj->maxdamage < BUNKER_WOOD_CRATE_HEALTH
+			&& (obj->modelnum == GE_MODEL_LARGE_WOOD_CRATE || obj->modelnum == GE_MODEL_SMALL_WOOD_CRATE)) {
+		const char *levelname = gelevelsName(g_Vars.stagenum);
+		if (levelname && strcmp(levelname, "Bunker 1") == 0) {
+			obj->maxdamage = BUNKER_WOOD_CRATE_HEALTH;
+		}
+	}
+#endif
 
 	modelnum = obj->modelnum;
 	setupLoadModeldef(modelnum);
@@ -624,9 +667,75 @@ void setupCreateObject(struct defaultobj *obj, s32 cmdindex)
  */
 void setupPlaceWeapon(struct weaponobj *weapon, s32 cmdindex)
 {
+#ifndef PLATFORM_N64
+	// GoldenEye mission pickups and weapons assigned to level guards use the
+	// corresponding Perfect Dark weapon number and model when that option is on.
+	if (gexPlusGetPdGuns() && modloaderStageIsMission(g_Vars.stagenum)) {
+		s32 pdweapon = gegunsPdEquivalent(weapon->weaponnum);
+
+		if (pdweapon != WEAPON_NONE) {
+			weapon->weaponnum = pdweapon;
+			weapon->base.modelnum = playermgrGetModelOfWeapon(pdweapon);
+		}
+	}
+
+	// A weapon number this game has no weapon for stops here. g_Weapons is
+	// indexed with one in two dozen places and not one of them bounds it, so
+	// a number past the table has to be dealt with before an object carrying
+	// it exists.
+	//
+	// What gets this far is an arena setup's MP location markers, which are
+	// translated into real weapons below - but only while a match is running.
+	// A mod map has one setup file and it is its arena's, so a Randomizer
+	// run's landing reads those markers outside a match. Dropped rather than
+	// translated: outside a match there is no mpGetMpWeaponByLocation() to
+	// ask, and a marker is a slot for the match to fill rather than a gun.
+	if (!g_Vars.normmplayerisrunning && !g_Vars.lvmpbotlevel
+			&& weapon->weaponnum >= NUM_WEAPONS) {
+		weapon->weaponnum = WEAPON_NONE;
+	}
+#endif
+
 	if (weapon->base.flags & OBJFLAG_ASSIGNEDTOCHR) {
 		u32 stack[2];
 		struct chrdata *chr = chrFindByLiteralId(weapon->base.pad);
+		if (chr && modRandomIsObjectiveChr(chr->chrnum)) {
+			weapon->weaponnum = WEAPON_SUPERDRAGON;
+			weapon->base.modelnum = MODEL_CHRSUPERDRAGON;
+			weapon->base.extrascale = 256;
+		} else if (modRandomHasReinforcements() && chr && chr->prop
+				&& chr->prop->type != PROPTYPE_PLAYER && chr->team != TEAM_00
+				&& (chr->team & (TEAM_01 | TEAM_ALLY | TEAM_NONCOMBAT)) == 0) {
+			u32 roll = rngRandom() % 10;
+			weapon->weaponnum = roll == 0 ? WEAPON_FALCON2 : roll == 1 ? WEAPON_AR34 : WEAPON_CMP150;
+			weapon->base.modelnum = roll == 0 ? MODEL_CHRFALCON2 : roll == 1 ? MODEL_CHRAR34 : MODEL_CHRCMP150;
+			if (roll >= 2) {
+				s32 wn, mn;
+				modRandomFallbackGun(chr->chrnum, &wn, &mn);
+				weapon->weaponnum = wn;
+				weapon->base.modelnum = mn;
+			}
+			weapon->base.extrascale = 256;
+		}
+		if (chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER
+				&& !modRandomNpcWeaponAllowed(chr->chrnum, weapon->weaponnum)) {
+			s32 wn, mn;
+			modRandomFallbackGun(chr->chrnum, &wn, &mn);
+			weapon->weaponnum = wn;
+			weapon->base.modelnum = mn;
+			weapon->base.extrascale = 256;
+		}
+
+		// debug: All Shotguns - whatever the stage or the roll gave this chr
+		if (chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER) {
+			s32 wn = weapon->weaponnum, mn = weapon->base.modelnum;
+
+			if (modRandomDebugShotgun(&wn, &mn)) {
+				weapon->weaponnum = wn;
+				weapon->base.modelnum = mn;
+				weapon->base.extrascale = 256;
+			}
+		}
 
 		if (chr && chr->prop && chr->model) {
 			if (cheatIsActive(CHEAT_MARQUIS)) {
@@ -1010,6 +1119,22 @@ s32 setupGetPortalByPad(s32 padnum)
 	return bgFindPortalBetweenPositions(&centre, &coord);
 }
 
+/**
+ * Control (GoldenEye's mission and its arena): every pane can be shot to
+ * pieces. A pane the conversion carried over as invincible, or immune to
+ * gunfire, is made an ordinary one as it is placed.
+ */
+static void setupMakeGlassBreakable(struct defaultobj *obj)
+{
+	const char *name = modloaderGetStageMapName(g_Vars.stagenum);
+
+	if (name && strcmp(name, "Control") == 0) {
+		obj->flags &= ~(OBJFLAG_INVINCIBLE | OBJFLAG_FORCEMORTAL);
+		obj->flags2 &= ~OBJFLAG2_IMMUNETOGUNFIRE;
+	}
+}
+
+
 s32 setupGetPortalByDoorPad(s32 padnum)
 {
 	f32 mult;
@@ -1159,6 +1284,19 @@ void setupCreateDoor(struct doorobj *door, s32 cmdindex)
 		}
 
 		prop = doorInit(door, &pos, &finalmtx, rooms, &sp54, &centre);
+
+#ifndef PLATFORM_N64
+		if (prop && portalnum >= 0 && gelevelsIsStage(g_Vars.stagenum)) {
+			RoomNum portalrooms[] = {
+				g_BgPortals[portalnum].roomnum1,
+				g_BgPortals[portalnum].roomnum2,
+				-1,
+			};
+			propDeregisterRooms(prop);
+			roomsAppend(portalrooms, prop->rooms, ARRAYCOUNT(prop->rooms));
+			propRegisterRooms(prop);
+		}
+#endif
 
 		if (door->base.flags & OBJFLAG_DOOR_HASPORTAL) {
 			door->portalnum = portalnum;
@@ -1317,8 +1455,8 @@ void setupLoadFiles(s32 stagenum)
 		g_ModelStates[i].modeldef = NULL;
 	}
 
-	if (stagenum < STAGE_TITLE) {
-		if (g_Vars.normmplayerisrunning) {
+	if (STAGE_IS_LEVEL(stagenum)) {
+		if (g_Vars.normmplayerisrunning || modRunIsArenaMission()) {
 			filenum = g_Stages[g_StageIndex].mpsetupfileid;
 		} else {
 			filenum = g_Stages[g_StageIndex].setupfileid;
@@ -1403,12 +1541,60 @@ void setupLoadFiles(s32 stagenum)
 #ifdef PD_PHYSICS
 		numchrs += ragdollGetExtraChrSlots(); // MOD: ragdoll physics - room for more corpses/test spawns
 #endif
+		numchrs += modRandomGetAllyReserve();
+		numobjs += modRandomGetAllyReserve() * 2; // runtime buddies and round guards, with dropped guns
 
 		if (!g_Vars.normmplayerisrunning && g_MissionConfig.iscoop && g_Vars.numaibuddies > 0) {
 			// @bug? The Hotshot buddy has two guns, but only one is counted here.
 			numchrs += g_Vars.numaibuddies;
 			numobjs += g_Vars.numaibuddies; // the buddy's weapon
 		}
+
+		if (g_Vars.normmplayerisrunning) {
+			// Simulants are spawned at runtime and are not in the setup file,
+			// so they must be budgeted for explicitly. Size from the number
+			// actually enabled rather than MAX_BOTS, so a small match does not
+			// reserve slots for simulants that will never spawn.
+			s32 numsims = mpGetNumSimSlotsOn();
+
+			numchrs += numsims;
+			numobjs += numsims; // each simulant's weapon
+		}
+
+		// Bodies that outlive their owner need a chr, a model, an anim and a
+		// prop each, and none of those pools grow after this. Decided here and
+		// read back below, so the two agree. See modbodies.c.
+		numchrs += modBodiesSetReserve();
+
+		// Guards Alerted! reinforcements need a chr each too, on top of the
+		// ten spares a stage gets, and a weapon each like a simulant - two
+		// under Akimbo. A guard drops them when it falls and the floor keeps
+		// what fell while the next wave brings its own, so two waves' worth
+		// of drops are counted beyond the guards' hands: past the slots
+		// counted here a model comes out of the stage pool, and past that
+		// out of nothing. See modalarm.c.
+		{
+			s32 numguards = modAlarmSetReserve();
+			s32 numguns = numguards * (modIsAkimboForGuards() ? 2 : 1);
+
+			numchrs += numguards;
+			numobjs += numguns * 3;
+		}
+
+		// A mission's player bodies are built out of the heap for third
+		// person and are in no setup file; stock never built one outside
+		// gunmem. Without a slot of their own a wave at the cap above takes
+		// theirs. Mirrored in the chr count below.
+		if (!g_Vars.normmplayerisrunning) {
+			numchrs += PLAYERCOUNT();
+		}
+
+		// A converted GoldenEye mission spawns as GoldenEye does, into ten
+		// spare slots that its own corpses vacate a second and a half after
+		// they fall. Perfect Dark's lie where they fell and hold their slot,
+		// and it asks for two free where GoldenEye asks for three, so the
+		// level's own spares are topped up here (chrTickDead() makes room
+		// too). Mirrored in the chr count below.
 
 		numobjs += setupCountCommandType(OBJTYPE_WEAPON);
 		numobjs += setupCountCommandType(OBJTYPE_KEY);
@@ -1533,7 +1719,61 @@ void setupCreateProps(s32 stagenum)
 			setupPreparePads();
 		}
 
+		// A stage with no waypoint graph (every GoldenEye Arenas map) gets
+		// one built from its pads during a Randomizer run or a match with
+		// simulants, or the run's guards and the simulants have nowhere to
+		// come from and no way to walk - modalarm.c
+		modAlarmBuildPadWaypoints();
+
 		setupLoadWaypoints();
+		modRandomPrepareArenaSetup();
+
+		// Randomizer: the mission is dealt again here, in the gap between the
+		// setup file's copy being loaded and anything being built from it.
+		// After the pads, whose rooms the roll's portal walk reads; before the
+		// walk below, which is what turns the rewritten stream into a level.
+		// A run that did not ask for this stage is over first, so the stage
+		// is not dealt as one of its rooms.
+		if (modAreMissionDoorsUnlocked() && g_StageSetup.props) {
+			// Mark the lift-door links before touching the setup commands.  Lift
+			// doors are not ordinary locked doors: their keyflags control the
+			// vanilla elevator's stop/hold state.
+			setupMarkLiftDoors();
+
+			struct defaultobj *entry = (struct defaultobj *)g_StageSetup.props;
+			while (entry->type != OBJTYPE_END) {
+				if (entry->type == OBJTYPE_DOOR) {
+					struct doorobj *door = (struct doorobj *)entry;
+					// Lift doors use keyflags as part of their normal stop/hold
+					// sequencing.  Clearing them makes every unlocked elevator
+					// behave as an automatically cycling lift instead of the
+					// vanilla, script-controlled elevator (notably Defection).
+					if (door->extra1 == 0) {
+						door->keyflags = 0;
+						entry->flags2 &= ~(OBJFLAG2_LOCKEDFRONT | OBJFLAG2_LOCKEDBACK);
+						if (door->doortype != DOORTYPE_LASER) {
+#ifndef PLATFORM_N64
+							// MOD: on a door, OBJFLAG_DEACTIVATED's bit is OBJFLAG_DOOR_HASPORTAL,
+							// so clearing it takes the door's portal away (a shut door then
+							// no longer hides the rooms behind it). A generated level's doors
+							// keep theirs.
+							if (levelgenIsStage(stagenum)) {
+								entry->flags &= ~OBJFLAG_CANNOT_ACTIVATE;
+							} else
+#endif
+							entry->flags &= ~(OBJFLAG_CANNOT_ACTIVATE | OBJFLAG_DEACTIVATED);
+						}
+					}
+				}
+				entry = (struct defaultobj *)((u32 *)entry + setupGetCmdLength((u32 *)entry));
+			}
+		}
+		modRunCheckLoad(stagenum);
+		modRandomRoll(stagenum);
+
+		// And the run's own two decisions on top of it: where this hop lands,
+		// and what the room it lands in asks for.
+		modRunRoll();
 
 		if (withchrs) {
 			s32 numchrs = 0;
@@ -1542,12 +1782,25 @@ void setupCreateProps(s32 stagenum)
 #ifdef PD_PHYSICS
 			numchrs += ragdollGetExtraChrSlots(); // MOD: ragdoll physics
 #endif
+			numchrs += modRandomGetAllyReserve();
 
 			if (g_Vars.normmplayerisrunning == false
 					&& g_MissionConfig.iscoop
 					&& g_Vars.numaibuddies > 0) {
 				numchrs += g_Vars.numaibuddies;
 			}
+
+			if (g_Vars.normmplayerisrunning) {
+				numchrs += mpGetNumSimSlotsOn();
+			}
+
+			numchrs += modBodiesGetReserve();
+			numchrs += modAlarmGetReserve();
+
+			if (!g_Vars.normmplayerisrunning) {
+				numchrs += PLAYERCOUNT(); // the third person bodies, as above
+			}
+
 
 			chrmgrConfigure(numchrs);
 		} else {
@@ -1606,6 +1859,14 @@ void setupCreateProps(s32 stagenum)
 					break;
 				case OBJTYPE_DOOR: {
 					struct doorobj *door = (struct doorobj *) obj;
+					// Omit the barrier prop entirely: scripts cannot reactivate it.
+					if (door->doortype == DOORTYPE_LASER
+							&& ((modAreMissionDoorsUnlocked()
+								&& (stagenum == STAGE_DEFECTION || stagenum == STAGE_INVESTIGATION
+									|| stagenum == STAGE_AIRFORCEONE))
+								|| (stagenum == STAGE_AIRBASE && modRandomIsOn()))) {
+						break;
+					}
 					// dont skip doors that are locked or are lift doors
 					bool skipdoor = nodoors && g_Vars.normmplayerisrunning && door->keyflags == 0 && door->extra1 == 0;
 					if (!skipdoor && withobjs && (obj->flags2 & diffflag) == 0) {
@@ -1681,6 +1942,9 @@ void setupCreateProps(s32 stagenum)
 							glass->portalnum = setupGetPortalByPad(obj->pad);
 							glass->unk64 = *(s32 *)&glass->unk64 / 65536.0f;
 						}
+#ifndef PLATFORM_N64
+						setupMakeGlassBreakable(obj);
+#endif
 
 						setupCreateObject(obj, index);
 					}
@@ -1792,6 +2056,9 @@ void setupCreateProps(s32 stagenum)
 							struct glassobj *glass = (struct glassobj *)obj;
 							glass->portalnum = setupGetPortalByPad(obj->pad);
 						}
+#ifndef PLATFORM_N64
+						setupMakeGlassBreakable(obj);
+#endif
 
 						setupCreateObject(obj, index);
 					}
@@ -2327,4 +2594,48 @@ void setupCreateProps(s32 stagenum)
 	}
 
 	stageAllocateBgChrs();
+
+#ifndef PLATFORM_N64
+	// A door's sibling that was never created (a mod's setup can gate one of
+	// a pair by difficulty, or name one that fails) still holds its raw
+	// relative index where a pointer is expected, and the sibling walk in
+	// doorsCalcFrac() reads it as one. GE-X's Maian SOS slot. Unlink those.
+	if (g_StageSetup.props) {
+		struct defaultobj *obj = (struct defaultobj *)g_StageSetup.props;
+		s32 index = 0;
+
+		while (obj->type != OBJTYPE_END) {
+			if (obj->type == OBJTYPE_DOOR && obj->prop) {
+				struct doorobj *door = (struct doorobj *)obj;
+
+				if (door->sibling && (door->sibling->base.type != OBJTYPE_DOOR || door->sibling->base.prop == NULL)) {
+					extern void sysLogPrintf(s32 level, const char *fmt, ...);
+					sysLogPrintf(1, "setup: door %d's sibling was never created; unlinked", index);
+					door->sibling = NULL;
+				}
+			}
+
+			obj = (struct defaultobj *)((u32 *)obj + setupGetCmdLength((u32 *)obj));
+			index++;
+		}
+	}
+
+	if (g_BodySpawnStats.entries) {
+		extern void sysLogPrintf(s32 level, const char *fmt, ...);
+		sysLogPrintf(0, "setup: %d chr entries, %d spawned, %d refused for something in the way at the pad",
+				g_BodySpawnStats.entries, g_BodySpawnStats.spawned, g_BodySpawnStats.collision);
+	}
+#endif
+
+	// Randomizer: the stage's own objectives have been inserted by the walk
+	// above, tags and all; these replace the list the game checks. After the
+	// walk rather than instead of it, so that everything else it does with an
+	// objective command still happens.
+	modRandomInsertObjectives();
+	modRunInsertObjectives();
+
+	// A run's guards route over the stage's waypoints, and an arena loaded
+	// solo has its lift shafts linked with no lifts in them - modalarm.c.
+	// Here because the lifts are props, and nothing has routed yet.
+	modAlarmCutLiftlessClimbs();
 }

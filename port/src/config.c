@@ -10,7 +10,7 @@
 
 #define CONFIG_MAX_SECNAME 128
 #define CONFIG_MAX_KEYNAME 256
-#define CONFIG_MAX_SETTINGS 512 // MOD: config capacity - was 300; later keys were silently dropped
+#define CONFIG_MAX_SETTINGS 1024 // MOD: config capacity - was 300; later keys were silently dropped
 
 typedef enum {
 	CFG_NONE,

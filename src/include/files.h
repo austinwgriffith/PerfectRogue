@@ -2021,3 +2021,11 @@
 #else
 #define NUM_FILES 2013
 #endif
+
+// MOD: GoldenEye levels. The file tables' size: the ROM's files, then room for
+// files added at boot (romdataFileAdd(), gelevels.c). Matches ROMDATA_MAX_FILES.
+#ifdef PLATFORM_N64
+#define NUM_FILE_SLOTS NUM_FILES
+#else
+#define NUM_FILE_SLOTS 4096
+#endif

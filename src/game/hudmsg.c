@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modrules.h"
 #include "constants.h"
 #include "constants.h"
 #include "game/propsnd.h"
@@ -6,6 +7,7 @@
 #include "game/player.h"
 #include "game/savebuffer.h"
 #include "game/hudmsg.h"
+#include "game/modrandom.h"
 #include "game/menugfx.h"
 #include "game/playermgr.h"
 #include "game/game_1531a0.h"
@@ -75,6 +77,9 @@ struct hudmsgtype g_HudmsgTypes[] = {
 	/*11*/ { 0, 0, 0, &g_CharsHandelGothicSm, &g_FontHandelGothicSm, 0x00ff0000, 0x000000a0, HUDMSGALIGN_XMIDDLE, HUDMSGALIGN_BELOWVIEWPORT, 0, 0, 120 },
 #else
 	/*11*/ { 1, 0, 0, &g_CharsHandelGothicSm, &g_FontHandelGothicSm, 0x00ff0000, 0x000000a0, HUDMSGALIGN_XMIDDLE, HUDMSGALIGN_BELOWVIEWPORT, 0, 0, 120 },
+#endif
+#ifndef PLATFORM_N64
+	/*12*/ { 0, 1, 0, &g_CharsHandelGothicMd, &g_FontHandelGothicMd, 0x0090ff00, 0x000000a0, HUDMSGALIGN_XMIDDLE, HUDMSGALIGN_BOTTOM,        0, 0, 200 }, // Perfect Random events
 #endif
 };
 
@@ -966,6 +971,12 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 	msg->y = y;
 }
 
+static s32 hudmsgPriority(s32 type, u32 flags)
+{
+	return (flags & HUDMSGFLAG_OBJECTIVE) || type == HUDMSGTYPE_OBJECTIVECOMPLETE
+		|| type == HUDMSGTYPE_OBJECTIVEFAILED;
+}
+
 void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf02,
 		struct fontchar **conf04, struct font **conf08,
 		u32 textcolour, u32 glowcolour,
@@ -986,6 +997,13 @@ void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf
 	if (type == HUDMSGTYPE_INGAMESUBTITLE && !optionsGetInGameSubtitles()) {
 		return;
 	}
+
+#ifndef PLATFORM_N64
+	// Perfect Random: the bottom-left notifications are pickups only
+	if (type == HUDMSGTYPE_DEFAULT && !(flags & HUDMSGFLAG_PICKUP) && modRandomIsOn()) {
+		return;
+	}
+#endif
 
 	for (j = 0; text[j] != '\0'; j++) {
 		hash = hash + text[j];
@@ -1016,17 +1034,22 @@ void hudmsgCreateFromArgs(char *text, s32 type, s32 conf00, s32 conf01, s32 conf
 		g_ScaleX = g_ViRes == VIRES_HI ? 2 : 1;
 #endif
 
-		// Find an unused index for the new message
+		// Find a free slot in the general queue.
 		for (index = 0; index < g_NumHudMessages; index++) {
 			if (g_HudMessages[index].state == HUDMSGSTATE_FREE) {
 				break;
 			}
 		}
 
-		if (index >= g_NumHudMessages
-				&& (type == HUDMSGTYPE_OBJECTIVECOMPLETE
-					|| type == HUDMSGTYPE_OBJECTIVEFAILED
-					|| type == HUDMSGTYPE_INGAMESUBTITLE)) {
+		const s32 priority = hudmsgPriority(type, flags);
+		if (index >= g_NumHudMessages && priority > 0) {
+			// Important banners can reclaim a lower-priority message when the queue is full.
+			index = hudmsgGetNext(-1);
+
+			while (index >= 0 && hudmsgPriority(g_HudMessages[index].type, g_HudMessages[index].flags) >= priority) {
+				index = hudmsgGetNext(g_HudMessages[index].id);
+			}
+		} else if (index >= g_NumHudMessages && type == HUDMSGTYPE_INGAMESUBTITLE) {
 			// Out of space - Check if an existing message can be replaced
 			index = hudmsgGetNext(-1);
 
@@ -1214,18 +1237,31 @@ void hudmsgsTick(void)
 				}
 
 				if (show) {
-					// Check if any other message is occupying our space
+					const s32 priority = hudmsgPriority(msg->type, msg->flags);
+
+					// Objective banners take priority over other overlapping messages.
 					for (i = 0; i < g_NumHudMessages; i++) {
-						if (g_HudMessages[i].state != HUDMSGSTATE_FREE
-								&& g_HudMessages[i].state != HUDMSGSTATE_QUEUED
+						if (i == index || g_HudMessages[i].state == HUDMSGSTATE_FREE) {
+							continue;
+						}
+
+						const s32 otherpriority = hudmsgPriority(g_HudMessages[i].type, g_HudMessages[i].flags);
+
+						if ((g_HudMessages[i].state != HUDMSGSTATE_QUEUED || otherpriority > priority)
 								&& g_HudMessages[i].x + g_HudMessages[i].width >= msg->x
 								&& g_HudMessages[i].x <= msg->x + msg->width
 								&& g_HudMessages[i].y + g_HudMessages[i].height >= msg->y
 								&& g_HudMessages[i].y <= msg->y + msg->height) {
+							if (priority > otherpriority) {
+								g_HudMessages[i].state = HUDMSGSTATE_FREE;
+								g_HudMessages[i].timer = 0;
+								continue;
+							}
+
 							show = false;
 
 							// Consider booting the previous message out earlier
-							if (g_HudMessages[i].type == msg->type
+							if (priority == otherpriority && g_HudMessages[i].type == msg->type
 									&& msg->boxed
 									&& g_HudMessages[i].boxed
 									&& g_HudMessages[i].state == HUDMSGSTATE_FADINGOUT) {

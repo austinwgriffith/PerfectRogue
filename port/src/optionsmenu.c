@@ -14,6 +14,7 @@
 #include "video.h"
 #include "input.h"
 #include "config.h"
+#include "hdtext.h"
 #include "audio.h" // MOD: surround 5.1
 #include "namebanner.h" // MOD: name banner
 #include "bodyview.h" // MOD: body awareness
@@ -1093,6 +1094,20 @@ static MenuItemHandlerResult menuhandlerDecalClamp(s32 operation, struct menuite
 	return 0;
 }
 
+// MOD: HD text (Mod.HDText): a texture pack's pictures of the font's glyphs
+static MenuItemHandlerResult menuhandlerHDText(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_GET:
+		return hdtextGetEnabled();
+	case MENUOP_SET:
+		hdtextSetEnabled(data->checkbox.value);
+		break;
+	}
+
+	return 0;
+}
+
 struct menuitem g_ExtendedVideoMenuItems[] = {
 	{
 		MENUITEMTYPE_CHECKBOX,
@@ -1301,6 +1316,14 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		0,
 		0,
 		NULL,
+	},
+	{
+		MENUITEMTYPE_CHECKBOX,
+		0,
+		MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"HD Text",
+		0,
+		menuhandlerHDText,
 	},
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -2226,6 +2249,8 @@ static const struct menubind menuBinds[] = {
 	{ CK_8000,   "Cycle Crouch [+]\n",  "N64 Ext 8000\n" },
 	{ CK_4000,   "Half Crouch [+]\n",   "N64 Ext 4000\n" },
 	{ CK_2000,   "Full Crouch [+]\n",   "N64 Ext 2000\n" },
+	{ CK_QUICK_GRENADE, "Quick Grenade\n", "Quick Grenade\n" },
+	{ CK_CYCLE_GRENADE, "Cycle Quick Grenade\n", "Cycle Quick Grenade\n" },
 	{ CK_ACCEPT, "UI Accept [+]\n",     "EXT UI Accept\n" },
 	{ CK_CANCEL, "UI Cancel [+]\n",     "EXT UI Cancel\n" },
 };
@@ -2246,6 +2271,8 @@ static MenuItemHandlerResult menuhandlerResetBindsN64(s32 operation, struct menu
 	}
 
 struct menuitem g_ExtendedBindsMenuItems[] = {
+	DEFINE_MENU_BIND(),
+	DEFINE_MENU_BIND(),
 	DEFINE_MENU_BIND(),
 	DEFINE_MENU_BIND(),
 	DEFINE_MENU_BIND(),
@@ -2669,6 +2696,32 @@ static MenuItemHandlerResult rdMaxActiveHandler(s32 *setting, s32 operation, uni
 static MenuItemHandlerResult menuhandlerRagdollMaxPhysical(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	return rdMaxActiveHandler(&g_RagdollMaxPhysical, operation, data);
+}
+
+// MOD: Max Drawn Corpses - prioritize the newest visible bodies. Slider: 0 = All, 1-256
+extern s32 g_RagdollMaxDrawnCorpses;
+
+static MenuItemHandlerResult menuhandlerRagdollMaxDrawnCorpses(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+	switch (operation) {
+	case MENUOP_CHECKDISABLED:
+		return !g_RagdollsEnabled;
+	case MENUOP_GETSLIDER:
+		data->slider.value = g_RagdollMaxDrawnCorpses < 0 ? 0 : g_RagdollMaxDrawnCorpses > 256 ? 256 : g_RagdollMaxDrawnCorpses;
+		break;
+	case MENUOP_SET:
+		g_RagdollMaxDrawnCorpses = data->slider.value;
+		break;
+	case MENUOP_GETSLIDERLABEL:
+		if (data->slider.value <= 0) {
+			sprintf(data->slider.label, "All");
+		} else {
+			sprintf(data->slider.label, "%d", data->slider.value);
+		}
+		break;
+	}
+
+	return 0;
 }
 
 static MenuItemHandlerResult menuhandlerRagdollMpMaxPhysical(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -3254,6 +3307,8 @@ struct menuitem g_ExtendedPhysicsPerformanceMenuItems[] = {
 	{ MENUITEMTYPE_LABEL, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_LABEL_ALTCOLOUR, (uintptr_t)"Combat Simulator\n", 0, NULL },
 	{ MENUITEMTYPE_SLIDER, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE, (uintptr_t)"Max Bodies", RD_BODIESSLIDER_MAX, menuhandlerRagdollMpMaxBodies },
 	{ MENUITEMTYPE_SLIDER, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE, (uintptr_t)"Max Active Bodies", RD_ACTIVESLIDER_MAX, menuhandlerRagdollMpMaxPhysical },
+	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
+	{ MENUITEMTYPE_SLIDER, 0, MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE, (uintptr_t)"Max Drawn Corpses", 257, menuhandlerRagdollMaxDrawnCorpses },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },
 	{ MENUITEMTYPE_DROPDOWN, 0, MENUITEMFLAG_LITERAL_TEXT, (uintptr_t)"Resting Bodies Turn Solid", 0, menuhandlerRagdollMpSolid },
 	{ MENUITEMTYPE_SEPARATOR, 0, 0, 0, 0, NULL },

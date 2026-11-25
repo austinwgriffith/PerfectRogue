@@ -202,12 +202,96 @@ static void crashStackTrace(char *msg, PEXCEPTION_POINTERS exinfo, HANDLE thread
 
 static char crashMsgBuf[CRASH_MAX_MSG + 1];
 
+#ifdef CRASH_RECOVERY
+static volatile LONG crashFrames;
+static void *crashRecoverJmp[5];
+static volatile s32 crashRecoverArmed;
+static s32 crashRecoverCount;
+static LONG crashRecoverWindowStart;
+static s32 crashRecoverTotal;
+
+#define CRASH_RECOVER_WINDOW 1800 // frames
+#define CRASH_RECOVER_MAX    300  // within the window
+#define CRASH_RECOVER_LOGS   4    // full logs written, then one line each
+
+void **crashRecoverBuf(void)
+{
+	return crashRecoverJmp;
+}
+
+void crashRecoverArm(void)
+{
+	crashRecoverArmed = 1;
+}
+
+void crashRecoverDisarm(void)
+{
+	crashRecoverArmed = 0;
+}
+
+static void crashRecoverJump(void)
+{
+	crashRecoverArmed = 0;
+	__builtin_longjmp(crashRecoverJmp, 1);
+}
+
+/** Whether this fault can be survived, and if so, arranges for the thread to leave the frame. */
+static s32 crashTryRecover(PEXCEPTION_POINTERS exinfo)
+{
+	const DWORD code = exinfo->ExceptionRecord->ExceptionCode;
+	PCONTEXT context = exinfo->ContextRecord;
+	static char recoverBuf[CRASH_MAX_MSG + 1];
+
+	if (!crashRecoverArmed || GetCurrentThreadId() != crashMainThreadId || IsDebuggerPresent()) {
+		return 0;
+	}
+
+	if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_INT_DIVIDE_BY_ZERO
+			&& code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_ARRAY_BOUNDS_EXCEEDED
+			&& code != EXCEPTION_IN_PAGE_ERROR && code != EXCEPTION_PRIV_INSTRUCTION) {
+		return 0; // a stack overflow has no stack left to jump from
+	}
+
+	if ((LONG)(crashFrames - crashRecoverWindowStart) > CRASH_RECOVER_WINDOW) {
+		crashRecoverWindowStart = crashFrames;
+		crashRecoverCount = 0;
+	}
+
+	if (++crashRecoverCount > CRASH_RECOVER_MAX) {
+		return 0; // it is not going away
+	}
+
+	crashRecoverTotal++;
+
+	sysLogPrintf(LOG_ERROR, "RECOVERED #%d: fault 0x%08lx at PC=%p (+0x%llx), frame abandoned, the game goes on",
+			crashRecoverTotal, code, exinfo->ExceptionRecord->ExceptionAddress,
+			(unsigned long long)((uintptr_t)exinfo->ExceptionRecord->ExceptionAddress - (uintptr_t)crashGetModuleBase(crashInit)));
+
+	if (crashRecoverTotal <= CRASH_RECOVER_LOGS) {
+		memset(recoverBuf, 0, sizeof(recoverBuf));
+		crashStackTrace(recoverBuf, exinfo, GetCurrentThread());
+		sysWriteCrashLog(recoverBuf);
+	}
+
+	context->Rip = (DWORD64)(uintptr_t)crashRecoverJump;
+	context->Rsp = ((context->Rsp - 0x400) & ~(DWORD64)0xf) - 8;
+
+	return 1;
+}
+#endif
+
 
 static long __stdcall crashHandler(PEXCEPTION_POINTERS exinfo)
 {
 	// static: there may be little stack left (stack overflow)
 	char *msg = crashMsgBuf;
 	static s32 inHandler = 0;
+
+#ifdef CRASH_RECOVERY
+	if (!inHandler && crashTryRecover(exinfo)) {
+		return EXCEPTION_CONTINUE_EXECUTION;
+	}
+#endif
 
 	if (inHandler) {
 		return EXCEPTION_CONTINUE_SEARCH; // crashed while handling a crash
@@ -255,7 +339,7 @@ static long __stdcall crashHandler(PEXCEPTION_POINTERS exinfo)
 
 	crashStackTrace(msg, exinfo, GetCurrentThread());
 
-	// MOD: crash logs: always written (pd.crash.log + a dated copy), with or without --log
+	// MOD: crash logs: always written (pd.crash.log + a dated copy), even with --no-log.
 	sysWriteCrashLog(msg);
 
 	sysFatalError("Crash! A crash log was saved as pd.crash.log.\n\n%s", msg);
@@ -271,7 +355,9 @@ static long __stdcall crashHandler(PEXCEPTION_POINTERS exinfo)
  */
 #define CRASH_HANG_SECONDS 10
 
+#ifndef CRASH_RECOVERY
 static volatile LONG crashFrames = 0;
+#endif
 static char crashHangBuf[CRASH_MAX_MSG + 1];
 
 void crashHeartbeat(void)

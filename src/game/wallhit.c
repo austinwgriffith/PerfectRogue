@@ -18,7 +18,11 @@
 #include "data.h"
 #include "types.h"
 #ifndef PLATFORM_N64
+#include <stdlib.h>
+#include <string.h>
+#include "gelevels.h"
 #include "game/lv.h" // MOD: wallhit timers - LV_STEPS240
+#include "game/camera.h"
 #endif
 
 #define WALLHITTYPE_SOFT   0
@@ -28,6 +32,37 @@
 #define WALLHITTYPE_PAINT  4
 
 #define IS_BLOOD_DROP(texnum) (texnum >= WALLHITTEX_BLOOD4 && texnum <= WALLHITTEX_BLOOD4)
+
+#ifndef PLATFORM_N64
+// Keep Depot's stored marks and bound the draw work in its dense firefights.
+enum {
+	WALLHIT_BG_VIEW_BUDGET = 384,
+	WALLHIT_PROP_VIEW_BUDGET = 128,
+	WALLHIT_BG_LAYER_BUDGET = 96,
+	WALLHIT_PROP_LAYER_BUDGET = 48,
+};
+static s32 g_WallhitBgDrawsLeft = WALLHIT_BG_VIEW_BUDGET;
+static s32 g_WallhitPropDrawsLeft = WALLHIT_PROP_VIEW_BUDGET;
+static bool g_WallhitUseDrawBudget;
+
+void wallhitBeginViewport(void)
+{
+	const char *levelname = gelevelsName(g_Vars.stagenum);
+	g_WallhitUseDrawBudget = levelname && strcmp(levelname, "Depot") == 0;
+	g_WallhitBgDrawsLeft = WALLHIT_BG_VIEW_BUDGET;
+	g_WallhitPropDrawsLeft = WALLHIT_PROP_VIEW_BUDGET;
+}
+
+static bool wallhitBgInView(struct wallhit *hit)
+{
+	const Vtx *a = &hit->vertices[0];
+	const Vtx *b = &hit->vertices[2];
+	// Half the Manhattan diagonal is conservative under rotation. Include
+	// the small offset from the original impact to the drawn surface.
+	const f32 radius = 0.5f * (abs(a->x - b->x) + abs(a->y - b->y) + abs(a->z - b->z)) + 4.0f;
+	return cam0f0b5b9c(&hit->relpos, radius);
+}
+#endif
 
 const char var7f1b5a10[] = "WallHit_MakeSpaceRoom : ERROR - Couldn't find any space in room %d\n";
 
@@ -304,7 +339,9 @@ bool wallhitRemoveOneInRoom(s32 room)
 						|| (room == 0 && g_Wallhits[i].objprop != NULL)
 						|| (room && room == g_Wallhits[i].roomnum))) {
 				if (g_WallhitTexes[g_Wallhits[i].texturenum].type == WALLHITTYPE_BLOOD) {
+					// MOD: gore - blood decals never go to make room
 					numblood++;
+					continue;
 
 					if (IS_BLOOD_DROP(g_Wallhits[i].texturenum)) {
 						if (g_Wallhits[i].createdframe < blooddropframe) {
@@ -791,14 +828,15 @@ void wallhitCreateWith20Args(struct coord *relpos, struct coord *arg1, struct co
 			max = g_MaxBgWallhitsPerRoom - 1;
 		}
 
-		if (g_WallhitCountsPerRoom[room2] > max) {
-			if (!wallhitRemoveOneInRoom(room2)) {
-				return;
-			}
+		// MOD: gore - blood decals have no room or object limit, and nothing
+		// else is refused for the blood in the room: past its limit a decal
+		// still goes up, after fading what non-blood decal it can
+		if (g_WallhitTexes[texnum].type == WALLHITTYPE_BLOOD) {
+			// (no limit)
+		} else if (g_WallhitCountsPerRoom[room2] > max) {
+			wallhitRemoveOneInRoom(room2);
 		} else if (g_WallhitCountsPerRoom[room] > g_MaxBgWallhitsPerRoom) {
-			if (!wallhitRemoveOneInRoom(room)) {
-				return;
-			}
+			wallhitRemoveOneInRoom(room);
 		}
 
 		// Adjust counters
@@ -1239,8 +1277,24 @@ Gfx *wallhitRenderOpaBgHits(s32 roomnum, Gfx *gdl)
 
 	wallhit = g_Rooms[roomnum].opawallhits;
 
+#ifndef PLATFORM_N64
+	s32 drawsleft = WALLHIT_BG_LAYER_BUDGET;
+#endif
 	while (wallhit) {
+#ifndef PLATFORM_N64
+		if (g_WallhitUseDrawBudget && (!drawsleft || !g_WallhitBgDrawsLeft)) break;
+#endif
 		if (wallhit->inuse && wallhit->unk6f_05) {
+#ifndef PLATFORM_N64
+			if (g_WallhitUseDrawBudget) {
+				if (!wallhitBgInView(wallhit)) {
+					wallhit = wallhit->localnext;
+					continue;
+				}
+				drawsleft--;
+				g_WallhitBgDrawsLeft--;
+			}
+#endif
 			if (wallhit->xlu) {
 				wallhit->unk6b = 1;
 			} else {
@@ -1301,8 +1355,24 @@ Gfx *wallhitRenderXluBgHits(s32 roomnum, Gfx *gdl)
 
 	wallhit = g_Rooms[roomnum].xluwallhits;
 
+#ifndef PLATFORM_N64
+	s32 drawsleft = WALLHIT_BG_LAYER_BUDGET;
+#endif
 	while (wallhit) {
+#ifndef PLATFORM_N64
+		if (g_WallhitUseDrawBudget && (!drawsleft || !g_WallhitBgDrawsLeft)) break;
+#endif
 		if (wallhit->inuse && wallhit->unk6f_05) {
+#ifndef PLATFORM_N64
+			if (g_WallhitUseDrawBudget) {
+				if (!wallhitBgInView(wallhit)) {
+					wallhit = wallhit->localnext;
+					continue;
+				}
+				drawsleft--;
+				g_WallhitBgDrawsLeft--;
+			}
+#endif
 			wallhit->unk6b = 1;
 
 			if (wallhit->texturenum != prevtexturenum || wallhit->unk6b != prev6b) {
@@ -1378,10 +1448,20 @@ static Gfx *wallhitRenderPropHitsInner(Gfx *gdl, struct prop *prop, bool xlu)
 
 	wallhit = xlu ? prop->xluwallhits : prop->opawallhits;
 
+#ifndef PLATFORM_N64
+	s32 drawsleft = WALLHIT_PROP_LAYER_BUDGET;
+#endif
 	while (wallhit) {
 		if (wallhit->inuse) {
 			hasany = true;
 
+#ifndef PLATFORM_N64
+			if (g_WallhitUseDrawBudget) {
+				if (!drawsleft || !g_WallhitPropDrawsLeft) break;
+				drawsleft--;
+				g_WallhitPropDrawsLeft--;
+			}
+#endif
 			if (wallhit->mtxindex != prevmtxindex) {
 				Mtxf *mtx = &obj->model->matrices[wallhit->mtxindex];
 				if (wallhit->mtxindex);
@@ -1443,6 +1523,12 @@ static Gfx *wallhitRenderPropHitsInner(Gfx *gdl, struct prop *prop, bool xlu)
 
 Gfx *wallhitRenderBgHits(s32 roomnum, Gfx *gdl)
 {
+#ifndef PLATFORM_N64
+	if (g_WallhitUseDrawBudget
+			&& (!g_WallhitBgDrawsLeft || (!g_Rooms[roomnum].opawallhits && !g_Rooms[roomnum].xluwallhits))) {
+		return gdl;
+	}
+#endif
 	gSPDecalClampEXT(gdl++, true); // MOD: decal edge clamp
 
 	if (g_Rooms[roomnum].opawallhits != NULL) {
@@ -1523,6 +1609,8 @@ void wallhitFadeSplatsForRemovedChr(struct prop *chrprop)
 				&& wallhit->roomnum > 0
 				&& wallhit->chrprop == chrprop
 				&& g_WallhitTexes[wallhit->texturenum].type == WALLHITTYPE_BLOOD) {
+			// MOD: gore - blood decals never fade, even when their chr goes
+			continue;
 			if (IS_BLOOD_DROP(wallhit->texturenum) || (rngRandom() % 100) < 35) {
 				wallhitFade(wallhit, TICKS(120));
 			} else {
@@ -1547,6 +1635,7 @@ void wallhitRemoveOldestWoundedSplatByChr(struct prop *chrprop)
 				&& !wallhit->fading
 				&& g_WallhitTexes[wallhit->texturenum].type == WALLHITTYPE_BLOOD
 				&& IS_BLOOD_DROP(wallhit->texturenum)
+				&& false /* MOD: gore - blood decals never fade */
 				&& wallhit->createdframe < oldestframe) {
 			oldestframe = wallhit->createdframe;
 			oldestindex = i;

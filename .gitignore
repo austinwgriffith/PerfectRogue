@@ -2,7 +2,9 @@
 *.pyc
 *.dll
 *.exe
-pd.*.z64
+*.z64
+*.n64
+*.v64
 build
 .flatpak-builder
 extracted
@@ -28,3 +30,15 @@ CppProperties.json
 cmake-build-debug
 /build_*/
 build.log
+
+# Perfect Rogue: local/run artifacts
+*.orig
+*.log
+*.zip
+pd.ini
+eeprom.bin
+mpsetups.bin
+/build-*/
+/_to_delete/
+/cache/
+/test-results/

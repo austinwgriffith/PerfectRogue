@@ -197,6 +197,7 @@
 #define G_RDPFLUSH_EXT               0x43
 #define G_CLEAR_DEPTH_EXT            0x44
 #define G_SETSUBPIXELOFFSET_EXT      0x45
+#define G_SETFONTGLYPH_EXT           0x46 // MOD: HD text - names the font glyph the next texture image is
 #define G_DECALCLAMP_EXT             0x49 // MOD: decal edge clamp - only for wallhits (bullet holes, blood, scorch marks)
 
 /* G_EXTRAGEOMETRYMODE flags */
@@ -221,6 +222,19 @@
 
 #define gDPSetFramebufferTextureEXT(pkt, f, s, w, i) \
     gSetImage(pkt, G_SETTIMG_FB_EXT, f, s, w, i)
+
+/**
+ * Names the glyph a font texture is about to draw, for HD text (hdtext.h).
+ * Applies to the next gDPSetTextureImage and nothing after it.
+ */
+#define gDPSetFontGlyphEXT(pkt, font, glyph, outline)          \
+{                                                              \
+    Gfx *_g = (Gfx *)(pkt);                                    \
+                                                               \
+    _g->words.w0 = _SHIFTL(G_SETFONTGLYPH_EXT, 24, 8);         \
+    _g->words.w1 = _SHIFTL(outline, 24, 8)                     \
+        | _SHIFTL(font, 16, 8) | _SHIFTL(glyph, 0, 16);        \
+}
 
 #define gDPCopyFramebufferEXT(pkt, dst, src, uls, ult, back)   \
 {                                                              \

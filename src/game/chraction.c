@@ -1,7 +1,20 @@
 #include <ultra64.h>
+#ifndef PLATFORM_N64
+#include "gechranims.h"
+#include "levelgenstage.h"
+#endif
+#include "game/modoptions.h"
+#include "game/modrules.h"
+#include "game/modalarm.h"
+#include "guardvoice.h"
+#include "game/modcareer.h"
+#include "game/modrandom.h"
+#include "game/modheads.h"
 #include "constants.h"
+#include "prcompat.h"
 #ifdef PD_PHYSICS
 #include "ragdoll.h" // MOD: ragdoll physics
+#include "clipcheck.h"
 #endif
 #ifndef PLATFORM_N64
 #include "game/cheats.h" // MOD: Deadly Punch, short chr navigation (Small Characters)
@@ -62,6 +75,9 @@
 #include "lib/vi.h"
 #include "data.h"
 #include "types.h"
+
+f32 g_ModPlayerHeadshotScale = 25;
+s32 g_ChrSpawnTrace = -1; // --chr-trace (modalarm.c)
 #ifndef PLATFORM_N64
 #include "system.h" // MOD: psychosis no knockout - sysLogPrintf
 #include "bodyview.h" // MOD: body awareness
@@ -1674,6 +1690,92 @@ f32 func0f02e684(struct prop *prop, f32 arg1, f32 arg2)
 	return func0f02e550(prop, arg1, arg2, CDTYPE_ALL, ymax, ymin);
 }
 
+f32 chrSpawnFacingAwayFromWall(struct coord *pos, RoomNum *rooms, f32 angle)
+{
+	enum { DIRECTIONS = 16 };
+	const f32 nearwall = 120.0f;
+	const f32 reach = 400.0f;
+	const f32 step = M_BADTAU / DIRECTIONS;
+	bool clear[DIRECTIONS];
+	f32 clearance[DIRECTIONS];
+	s32 nearest = -1;
+
+	if (rooms[0] <= 0) {
+		return angle;
+	}
+
+	for (s32 i = 0; i < DIRECTIONS; i++) {
+		f32 heading = angle + i * step;
+		if (heading >= M_BADTAU) {
+			heading -= M_BADTAU;
+		}
+
+		struct coord end = { pos->x + sinf(heading) * nearwall, pos->y, pos->z + cosf(heading) * nearwall };
+		clear[i] = cdTestLos03(pos, rooms, &end, CDTYPE_BG, GEOFLAG_WALL | GEOFLAG_BLOCK_SIGHT);
+		if (!clear[i]) {
+			nearest = i;
+		}
+	}
+
+	if (nearest < 0) {
+		return angle;
+	}
+
+	nearest = -1;
+	for (s32 i = 0; i < DIRECTIONS; i++) {
+		f32 heading = angle + i * step;
+		if (heading >= M_BADTAU) {
+			heading -= M_BADTAU;
+		}
+
+		struct coord end = { pos->x + sinf(heading) * reach, pos->y, pos->z + cosf(heading) * reach };
+
+		clearance[i] = reach;
+		if (cdExamLos08(pos, rooms, &end, CDTYPE_BG, GEOFLAG_WALL | GEOFLAG_BLOCK_SIGHT) == CDRESULT_COLLISION) {
+			struct coord hit;
+			cdGetPos(&hit, __LINE__, __FILE__);
+			f32 dx = hit.x - pos->x;
+			f32 dz = hit.z - pos->z;
+			clearance[i] = sqrtf(dx * dx + dz * dz);
+		}
+
+		if (!clear[i] && (nearest < 0 || clearance[i] < clearance[nearest])) {
+			nearest = i;
+		}
+	}
+
+	s32 facing = MIN(nearest, DIRECTIONS - nearest);
+	if (clear[0] && facing >= DIRECTIONS / 4) {
+		return angle;
+	}
+
+	s32 best = 0;
+	f32 bestscore = clearance[0];
+
+	// Prefer open space with the nearest wall to the side or behind. In a
+	// narrow corridor that usually yields a heading along the corridor.
+	for (s32 i = 1; i < DIRECTIONS; i++) {
+		s32 away = (i + DIRECTIONS - nearest) % DIRECTIONS;
+		away = MIN(away, DIRECTIONS - away);
+		s32 turn = MIN(i, DIRECTIONS - i);
+		f32 side = MIN(clearance[i - 1], clearance[(i + 1) % DIRECTIONS]);
+		f32 score = clearance[i] + side * 0.25f + away * 10.0f - turn * 4.0f;
+
+		if ((clear[i] && !clear[best])
+				|| (clear[i] == clear[best] && clearance[i] > clearance[0] + 0.5f && score > bestscore)) {
+			bestscore = score;
+			best = i;
+		}
+	}
+
+	if (best == 0) {
+		return angle;
+	}
+
+	f32 heading = angle + best * step;
+	return heading >= M_BADTAU ? heading - M_BADTAU : heading;
+}
+
 void chrChooseStandAnimation(struct chrdata *chr, f32 mergetime)
 {
 	struct prop *leftgun = chrGetHeldProp(chr, HAND_LEFT);
@@ -2058,6 +2160,14 @@ void chrSurrender(struct chrdata *chr)
 {
 	u32 action = ACT_SURRENDER;
 
+#ifndef PLATFORM_N64
+	if (!modRandomChrMaySurrender(chr)) {
+		return; // Perfect Random: the kill target Cassandra never gives up
+	}
+
+	modRandomOnSurrender(chr);
+#endif
+
 	if (chr->actiontype != action) {
 		chrStopFiring(chr);
 		chr->actiontype = action;
@@ -2361,9 +2471,18 @@ void chrAttackKneel(struct chrdata *chr, u32 attackflags, s32 entityid)
 	chrAttack(chr, animgroup, flip, firing, attackflags, entityid, false);
 }
 
+static void chrDecloakForAttack(struct chrdata *chr, bool firing)
+{
+	if (firing && (chr->hidden2 & CHRH2FLAG_ASSASSINCLOAK)
+			&& modRandomAssassinCloakActive()) {
+		chrUncloakTemporarily(chr);
+	}
+}
+
 void chrAttackWalkChooseAnimation(struct chrdata *chr)
 {
 	if (chr->aibot == NULL) {
+		chrDecloakForAttack(chr, chr->act_attackwalk.firegun[HAND_LEFT] || chr->act_attackwalk.firegun[HAND_RIGHT]);
 		modelSetAnimation(chr->model, chr->act_attackwalk.animcfg->animnum,
 				chr->act_attackwalk.flip, chr->act_attackwalk.animcfg->unk10, 0.5, 16);
 	}
@@ -2520,6 +2639,8 @@ void chrAttackWalk(struct chrdata *chr, bool run)
 
 void chrAttackRollChooseAnimation(struct chrdata *chr)
 {
+	chrDecloakForAttack(chr, (chr->actiontype != ACT_ATTACK || !(chr->act_attack.flags & ATTACKFLAG_AIMONLY))
+			&& (chr->act_attack.firegun[HAND_LEFT] || chr->act_attack.firegun[HAND_RIGHT]));
 	modelSetAnimation(chr->model, chr->act_attack.animcfg->animnum, chr->act_attack.flip,
 			chr->act_attack.animcfg->unk10, chrGetRangedSpeed(chr, 0.5, 0.8), 16);
 
@@ -2750,9 +2871,23 @@ void chrStartAnim(struct chrdata *chr, s32 animnum, f32 startframe, f32 endframe
 	}
 }
 
+#ifndef PLATFORM_N64
+void chrRecordDeathOrder(struct chrdata *chr)
+{
+	static u32 serial;
+
+	if (chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
+		chr->deathSerial = ++serial;
+	}
+}
+#endif
+
 void chrBeginDead(struct chrdata *chr)
 {
 	if (chr->actiontype != ACT_DEAD) {
+#ifdef PD_PHYSICS
+		ragdollSettleDistantCorpse(chr);
+#endif
 		chrStopFiring(chr);
 
 		if (chr->cover != -1) {
@@ -2760,6 +2895,9 @@ void chrBeginDead(struct chrdata *chr)
 			chr->cover = -1;
 		}
 
+#ifndef PLATFORM_N64
+		chrRecordDeathOrder(chr);
+#endif
 		chr->actiontype = ACT_DEAD;
 		chr->act_dead.fadetimer60 = chr->aibot ? 0 : -1;
 		chr->act_dead.fadenow = false;
@@ -2767,6 +2905,10 @@ void chrBeginDead(struct chrdata *chr)
 		chr->act_dead.invistimer60 = 0;
 		chr->act_dead.notifychrindex = 0;
 		chr->sleep = 0;
+
+#ifdef PD_PHYSICS
+		ragdollOnCorpseSettled(chr);
+#endif
 
 		if (chr->race == RACE_DRCAROLL) {
 			chr->drcarollimage_left = DRCAROLLIMAGE_STATIC;
@@ -2952,6 +3094,7 @@ void chrAttack(struct chrdata *chr, struct attackanimgroup **animgroups, bool fl
 			if (modelIsAnimMerging(chr->model)) {
 				chr->hidden |= CHRHFLAG_NEEDANIM;
 			} else {
+				chrDecloakForAttack(chr, !(attackflags & ATTACKFLAG_AIMONLY) && (firing[HAND_LEFT] || firing[HAND_RIGHT]));
 				modelSetAnimation(model, animcfg->animnum, flip, animcfg->unk10, chrGetRangedSpeed(chr, 0.5f, 0.8f), 16);
 				func0f031254(chr);
 
@@ -3023,6 +3166,9 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 	f32 impactforce1;
 	f32 impactforce2;
 	f32 impactforce3;
+
+	if (!knockout) modRandomOnChrDeath(chr, aplayernum);
+	if (!knockout) modCareerRecordDeath(chr, aplayernum);
 
 	// If chr was previously knocked out, they are now dead so decrease KO counter
 	if (chr->actiontype == ACT_DRUGGEDCOMINGUP
@@ -3134,8 +3280,16 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 	chr->chrflags &= ~CHRCFLAG_HIDDEN;
 #endif
 
+#ifndef PLATFORM_N64
+	if (!knockout) {
+		chrRecordDeathOrder(chr);
+	}
+#endif
 	chr->actiontype = (knockout == true ? ACT_DRUGGEDDROP : ACT_DIE);
 
+#ifndef PLATFORM_N64
+	chr->act_die.nextheadshotsprayframe = !knockout && hitpart == HITPART_HEAD ? 0.0f : -1.0f;
+#endif
 	chr->act_die.notifychrindex = 0;
 	chr->act_die.timeextra = 0;
 	chr->act_die.drcarollimagedelay = TICKS(45);
@@ -3217,6 +3371,23 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 					struct animtablerow *row = &g_AnimTableHumanSlumped[rngRandom() % 4];
 					u32 stack3;
 
+#ifndef PLATFORM_N64
+					// Perfect Dark's slump when its reaction option is on;
+					// otherwise GoldenEye's death_stagger_back_to_wall.
+					s32 slumpanim = row->animnum;
+
+					if (g_GeChrAnims) {
+						if (geChrAnimsPdDeaths()) {
+							slumpanim = geChrAnimsPd(row->animnum);
+						} else {
+							row = geChrAnimsStagger(rngRandom());
+							slumpanim = row->animnum;
+						}
+					}
+#else
+					s32 slumpanim = row->animnum;
+#endif
+
 					chr->act_die.thudframe1 = row->thudframe1;
 					chr->act_die.thudframe2 = row->thudframe2;
 
@@ -3237,7 +3408,13 @@ void chrBeginDeath(struct chrdata *chr, struct coord *dir, f32 relangle, s32 hit
 			// The player must be behind the chr for it to happen.
 			if (relangle > 2.3558194637299f && relangle < 3.9263656139374f
 					&& rngRandom() % 5 < 2
-					&& chr->specialdie == SPECIALDIE_NONE) {
+					&& chr->specialdie == SPECIALDIE_NONE
+#ifndef PLATFORM_N64
+					// Perfect Dark's own; available on GoldenEye only when the
+					// Perfect Dark reaction option is enabled.
+					&& (!g_GeChrAnims || geChrAnimsPdDeaths())
+#endif
+					) {
 				struct animtablerow *row;
 
 				struct animtablerow rows[] = {
@@ -3557,6 +3734,36 @@ void chrBeginArgh(struct chrdata *chr, f32 angle, s32 hitpart)
 	}
 }
 
+/**
+ * MOD: gore - a chr that lands from a height (chr.c) flinches as if it had
+ * been shot in a leg: one of the leg hit locations' injury animations,
+ * picked at random as a shot's are. A guard goes into ACT_ARGH as when shot;
+ * a simulant plays the animation only (chrPlayArghAnimation(), which also
+ * turns it away if flinching is off or it has no third person body). Not
+ * for a chr that is dying, dead or knocked out.
+ */
+void chrFlinchFromFall(struct chrdata *chr)
+{
+	static const s32 legs[] = {
+		HITPART_LSHIN, HITPART_RSHIN, HITPART_LTHIGH, HITPART_RTHIGH, HITPART_LFOOT, HITPART_RFOOT
+	};
+	s32 hitpart = legs[rngRandom() % ARRAYCOUNT(legs)];
+
+	if (chr->actiontype == ACT_DIE || chr->actiontype == ACT_DEAD || chr->actiontype == ACT_DRUGGEDKO) {
+		return;
+	}
+
+	if (chr->aibot) {
+#ifndef PLATFORM_N64
+		chrPlayArghAnimation(chr, 0, hitpart);
+#endif
+	} else {
+		const s32 injury = chr->hitpart;
+		chrBeginArgh(chr, 0, hitpart);
+		chr->hitpart = injury;
+	}
+}
+
 void chrReactToDamage(struct chrdata *chr, struct coord *vector, f32 angle, s32 hitpart, struct gset *gset, s32 aplayernum)
 {
 	s32 race = CHRRACE(chr);
@@ -3632,6 +3839,130 @@ void chrReactToDamage(struct chrdata *chr, struct coord *vector, f32 angle, s32 
 /**
  * Launch a chr away from the given pos (for explosions).
  */
+static bool chrYeetFromPosWithAction(struct chrdata *chr, struct coord *exppos, f32 force, bool animonly)
+{
+	struct model *model = chr->model;
+	struct prop *prop = chr->prop;
+	f32 faceangle;
+	f32 latangle;
+	u32 stack1;
+	s32 angleindex;
+	u32 stack2;
+	struct yeetanim *row;
+	struct coord dist;
+	u32 stack3;
+	s32 race = CHRRACE(chr);
+	f32 speed;
+	s32 subindex;
+	f32 angletoexplosion;
+
+	if (race != RACE_DRCAROLL && race != RACE_EYESPY && race != RACE_ROBOT) {
+		faceangle = chrGetInverseTheta(chr);
+		latangle = atan2f(prop->pos.x - exppos->x, prop->pos.z - exppos->z);
+
+		dist.x = prop->pos.x - exppos->x;
+		dist.y = prop->pos.y - exppos->y;
+		dist.z = prop->pos.z - exppos->z;
+
+		if (dist.f[0] == 0 && dist.f[1] == 0 && dist.f[2] == 0) {
+			dist.z = 1;
+		}
+
+		speed = 0.625f * force / sqrtf(dist.f[0] * dist.f[0] + dist.f[1] * dist.f[1] + dist.f[2] * dist.f[2]);
+		angletoexplosion = latangle - faceangle;
+
+		dist.x *= speed;
+		dist.y *= speed;
+		dist.z *= speed;
+
+		chr->fallspeed.x = dist.x;
+		chr->fallspeed.y = dist.y;
+		chr->fallspeed.z = dist.z;
+
+		if (latangle < faceangle) {
+			angletoexplosion += M_BADTAU;
+		}
+
+		angleindex = angletoexplosion * 1.2734422683716f + 0.5f;
+
+		if (angleindex >= 8) {
+			angleindex = 0;
+		}
+
+		subindex = rngRandom() % g_YeetAnimIndexesByRaceAngle[race][angleindex].count;
+
+		if (race == RACE_HUMAN) {
+			row = &g_YeetAnimsHuman[g_YeetAnimIndexesByRaceAngle[race][angleindex].indexes[subindex]];
+
+#ifndef PLATFORM_N64
+			// Perfect Dark's own blast deaths when the reaction option is on.
+			if (g_GeChrAnims && geChrAnimsPdDeaths()) {
+				static struct yeetanim pdrow;
+
+				pdrow = *row;
+				pdrow.animnum = geChrAnimsPd(row->animnum);
+				row = &pdrow;
+			} else if (g_GeChrAnims) {
+				static struct yeetanim gerow;
+				s32 animnum, flip;
+
+				if (geChrAnimsBlast(angleindex, rngRandom(), &animnum, &flip, &gerow.speed,
+							&gerow.startframe, &gerow.thudframe, &gerow.endframe)) {
+					gerow.animnum = animnum;
+					gerow.flip = flip;
+					row = &gerow;
+				}
+			}
+#endif
+		} else if (race == RACE_SKEDAR) {
+			row = &g_YeetAnimsSkedar[g_YeetAnimIndexesByRaceAngle[race][angleindex].indexes[subindex]];
+		}
+
+		if (!animonly) {
+			chrStopFiring(chr);
+			chrUncloak(chr, true);
+
+#if VERSION >= VERSION_NTSC_1_0
+			chr->chrflags &= ~CHRCFLAG_HIDDEN;
+#endif
+
+#ifndef PLATFORM_N64
+			chrRecordDeathOrder(chr);
+#endif
+			chr->actiontype = ACT_DIE;
+#ifndef PLATFORM_N64
+			chr->act_die.nextheadshotsprayframe = -1.0f;
+#endif
+
+			chr->act_die.notifychrindex = 0;
+			chr->act_die.thudframe1 = row->thudframe;
+			chr->act_die.thudframe2 = -1;
+			chr->act_die.timeextra = 0;
+			chr->act_die.drcarollimagedelay = TICKS(45);
+
+			if (chr->race == RACE_DRCAROLL) {
+				chr->drcarollimage_left = 1 + (s32)((rngRandom() % 400) * 0.01f);
+				chr->drcarollimage_right = 1 + (s32)((rngRandom() % 400) * 0.01f);
+			}
+
+			chr->sleep = 0;
+		}
+
+		modelSetAnimation(model, row->animnum, row->flip, row->startframe, row->speed, 8);
+
+		if (row->endframe >= 0.0f) {
+			modelSetAnimEndFrame(model, row->endframe);
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * Launch a chr away from the given pos (for explosions).
+ */
 void chrYeetFromPos(struct chrdata *chr, struct coord *exppos, f32 force)
 {
 	struct model *model = chr->model;
@@ -3697,7 +4028,13 @@ void chrYeetFromPos(struct chrdata *chr, struct coord *exppos, f32 force)
 		chr->chrflags &= ~CHRCFLAG_HIDDEN;
 #endif
 
+#ifndef PLATFORM_N64
+		chrRecordDeathOrder(chr);
+#endif
 		chr->actiontype = ACT_DIE;
+#ifndef PLATFORM_N64
+		chr->act_die.nextheadshotsprayframe = -1.0f;
+#endif
 
 		chr->act_die.notifychrindex = 0;
 		chr->act_die.thudframe1 = row->thudframe;
@@ -3768,6 +4105,7 @@ void chrKnockOut(struct chrdata *chr, f32 angle, s32 hitpart, struct gset *gset)
 #endif
 
 		mpstatsIncrementTotalKnockoutCount();
+		modCareerRecordKnockout(chr);
 
 		chr->actiontype = ACT_DRUGGEDCOMINGUP;
 		chr->act_druggedcomingup.timer60 = 0;
@@ -3854,6 +4192,10 @@ void chrChoke(struct chrdata *chr, s32 choketype)
 		return;
 	}
 
+#ifdef PD_PHYSICS
+	if (guardVoiceTryReaction(chr)) return;
+#endif
+
 	if (chr->prop->type == PROPTYPE_PLAYER) {
 		playernum = playermgrGetPlayerNumByProp(chr->prop);
 
@@ -3862,7 +4204,8 @@ void chrChoke(struct chrdata *chr, s32 choketype)
 		}
 	}
 
-	if (g_HeadsAndBodies[chr->headnum].ismale) {
+	// MOD: pain sounds follow the body (model), not the head.
+	if (g_HeadsAndBodies[chr->bodynum].ismale) {
 		male = true;
 	}
 
@@ -4039,7 +4382,8 @@ void chrChoke(struct chrdata *chr, s32 choketype)
 				SFX_GURGLE_05B2,
 			};
 
-			if ((rngRandom() % 8) == 0) {
+			// These gurgles include a male voice. Keep the selected pain cry for women.
+			if ((rngRandom() % 8) == 0 && male) {
 				soundnum = sounds[rngRandom() % 3];
 			}
 
@@ -4092,6 +4436,8 @@ f32 chrGetShield(struct chrdata *chr)
 
 void chrSetShield(struct chrdata *chr, f32 amount)
 {
+	f32 previous = chr->cshield;
+
 	if (amount < 0) {
 		amount = 0;
 	}
@@ -4108,6 +4454,9 @@ void chrSetShield(struct chrdata *chr, f32 amount)
 		if (playernum >= 0) {
 			s32 prevplayernum = g_Vars.currentplayernum;
 			setCurrentPlayerNum(playernum);
+			if (chr->cshield > previous) {
+				sndStart(var80095200, SFX_PICKUP_SHIELD, NULL, -1, -1, -1, -1, -1);
+			}
 			playerDisplayHealth();
 			g_Vars.currentplayerstats->armourcount += amount * 0.125f;
 			setCurrentPlayerNum(prevplayernum);
@@ -4223,6 +4572,12 @@ void chrDamageByImpact(struct chrdata *chr, f32 damage, struct coord *vector, st
 
 void chrDamageByExplosion(struct chrdata *chr, f32 damage, struct coord *vector, struct prop *prop, struct coord *explosionpos)
 {
+#ifndef PLATFORM_N64
+	if (modRandomChrExplosionImmune(chr)) {
+		return;
+	}
+#endif
+
 	chrDamage(chr, damage, vector, NULL, prop, HITPART_GENERAL,
 			true,      // damageshield
 			chr->prop, // prop2
@@ -4305,6 +4660,14 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	bool canchoke = true;
 	s32 aplayernum = -1;
 	s32 choketype = CHOKETYPE_NONE;
+
+	const s32 leadernum = modRandomGetAlienLeader();
+
+	// Only damage credited to a player can hurt the active Alien War leader.
+	if (leadernum >= 0 && chr->chrnum == leadernum
+			&& (!aprop || aprop->type != PROPTYPE_PLAYER)) {
+		return;
+	}
 
 #ifdef PD_PHYSICS
 
@@ -4401,7 +4764,11 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 
 	func = gsetGetWeaponFunction(gset);
 	ismelee = func && (func->type & 0xff) == INVENTORYFUNCTYPE_MELEE;
+	const bool skedarMelee = ismelee && aprop
+		&& (aprop->type == PROPTYPE_CHR || aprop->type == PROPTYPE_PLAYER)
+		&& aprop->chr && CHRRACE(aprop->chr) == RACE_SKEDAR;
 	makedizzy = race != RACE_DRCAROLL && gsetHasFunctionFlags(gset, FUNCFLAG_MAKEDIZZY);
+	if (skedarMelee) makedizzy = false;
 #ifdef PD_PHYSICS
 
 	// MOD: Deadly Punch - the cheat's punch kills (a punch only dizzies and
@@ -4414,6 +4781,13 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 	if (chr->prop == g_Vars.currentplayer->prop && g_Vars.currentplayer->invincible) {
 		return;
 	}
+
+#ifndef PLATFORM_N64
+	killfeedNoteHit(chr, gset, aprop, explosion); // the kill feed's weapon (drawing only)
+	modCareerNoteHit(chr, aprop, explosion || !(ismelee || weaponHost(gset->weaponnum) == WEAPON_TRANQUILIZER)); // gauntlet achievements
+#endif
+
+	if (g_NetMode == NETMODE_SERVER) netEvChrDamage(chr, aprop, hitpart, damageshield, explosion); // netplay E4: a hit that lands
 
 	if (ismelee) {
 		isshoot = false;
@@ -4437,6 +4811,18 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		damage = 0;
 	}
 
+	// Objective protection and offscreen firefight scaling do not stack.
+	if (aprop && aprop->type == PROPTYPE_CHR && aprop != vprop
+			&& modRandomIsObjectiveChr(chr->chrnum)) {
+		damage *= 0.1f;
+	} else if (!explosion && func && (func->type & 0xff) == INVENTORYFUNCTYPE_SHOOT
+			&& aprop && aprop->type == PROPTYPE_CHR && aprop->chr && aprop != vprop
+			&& vprop && vprop->type == PROPTYPE_CHR
+			&& chrCompareTeams(aprop->chr, chr, COMPARE_ENEMIES)
+			&& !chrIsNearOrVisibleToPlayer(aprop) && !chrIsNearOrVisibleToPlayer(vprop)) {
+		damage *= 0.1f;
+	}
+
 	// Apply damage scaling based on difficulty settings
 	if (g_Vars.mplayerisrunning == false) {
 		// Solo
@@ -4450,7 +4836,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			headshotdamagescale = 25;
 		} else if (aprop && aprop->type == PROPTYPE_CHR && vprop->type == PROPTYPE_PLAYER) {
 			// Chr is attacking player
-			damage *= g_PlayerDamageRxScale * pdmodeGetEnemyDamage();
+			damage *= g_PlayerDamageRxScale * pdmodeGetEnemyDamage() * modCareerPlayerDamageScale();
 		}
 
 		if (vprop->type != PROPTYPE_PLAYER) {
@@ -4471,7 +4857,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			damage *= g_PlayerDamageTxScale;
 			headshotdamagescale = 25;
 		} else if (aprop && aprop->type == PROPTYPE_CHR && vprop->type == PROPTYPE_PLAYER) {
-			damage *= g_PlayerDamageRxScale * pdmodeGetEnemyDamage();
+			damage *= g_PlayerDamageRxScale * pdmodeGetEnemyDamage() * modCareerPlayerDamageScale();
 		}
 
 		if (vprop->type != PROPTYPE_PLAYER) {
@@ -4490,9 +4876,9 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			}
 		} else if (aprop && aprop == g_Vars.bond->prop) {
 			damage *= g_PlayerDamageTxScale;
-			headshotdamagescale = 25;
-		} else if (aprop && aprop != g_Vars.bond->prop && vprop == g_Vars.bond->prop) {
-			damage *= g_PlayerDamageRxScale * pdmodeGetEnemyDamage();
+			headshotdamagescale = g_ModPlayerHeadshotScale;
+		} else if (aprop && !coopIsAgentProp(aprop) && coopIsAgentProp(vprop)) {
+			damage *= g_PlayerDamageRxScale * pdmodeGetEnemyDamage() * modCareerPlayerDamageScale();
 		}
 
 		if (vprop != g_Vars.bond->prop) {
@@ -4517,6 +4903,18 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			setCurrentPlayerNum(prevplayernum);
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// GoldenEye's head is four times the body and no more (chrlvDamage).
+	// Perfect Dark's player headshot, twenty-five times that again, kills
+	// anyone at once, and a converted mission's lists count on a hit they
+	// can outlive: Silo's Ourumov (30 armour, flees when it is gone) and the
+	// Cradle's Trevelyan (invincible once his list has seen a wound) died to
+	// one shot in the head before their lists had a tick to answer it
+	if (geRoomActive() && !modRandomIsOn()) {
+		headshotdamagescale = 1;
+	}
+#endif
 
 	// Apply rumble
 	if (vprop->type == PROPTYPE_PLAYER) {
@@ -4588,6 +4986,18 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		damage *= 10;
 	}
 
+	// Knife Expert (a Gauntlet's permanent boon): the player's knives kill in one
+	// hit, shield or not - the shield is skipped, and the hit is far more than
+	// any health. (Only the player's, and only on others.)
+	if (gset && gset->weaponnum == WEAPON_COMBATKNIFE && gset->weaponfunc != FUNC_POISON && aprop
+			&& aprop->type == PROPTYPE_PLAYER && vprop != aprop && modCareerHasPerm(MODCAREER_PERM_KNIFE)) {
+		damageshield = false; // straight past the shield (it would soak a whole hit however little it has)
+
+		if (damage < 100000.0f) {
+			damage = 100000.0f;
+		}
+	}
+
 	// Handle shield damage
 	if (damageshield) {
 		shield = chrGetShield(chr);
@@ -4597,6 +5007,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		}
 
 		if (shield > 0) {
+			const f32 previousShield = shield;
 			if (g_Vars.normmplayerisrunning) {
 #if VERSION >= VERSION_PAL_FINAL
 				// Fixing a @bug?
@@ -4608,6 +5019,15 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 
 			chr->chrflags |= CHRCFLAG_SHIELDDAMAGED;
 
+#ifndef PLATFORM_N64
+			// GoldenEye's body armour has no shimmer: a hit on it is only
+			// the red flash (bondview2.c's record_damage_kills(), below at
+			// playerDisplayDamage()), on the player and on anyone else
+			// (F3 20260926-203211/225303)
+			if (geRoomActive() && !modRandomIsOn()) {
+				// nothing drawn (Perfect Random shows its shielded guards' hits)
+			} else
+#endif
 			if (prop2 && node && chr->model) {
 				func0f034080(chr, node, prop2, model, side, arg11);
 			} else {
@@ -4630,6 +5050,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 
 			showshield = true;
 			usedshield = true;
+			if (chrGetShield(chr) < previousShield) modRandomObjectiveReactToPlayer(chr, aprop);
 		}
 	}
 
@@ -4770,6 +5191,8 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			damage *= 10;
 		}
 
+		if (chr->hidden2 & CHRH2FLAG_BLONDREVENGE) headshotdamagescale = 1.0f;
+
 		// Apply damage multipliers based on which body parts were hit,
 		// and flinch head if shot in the head
 		if (hitpart == HITPART_HEAD) {
@@ -4799,6 +5222,15 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			// No damage for hat hits
 			damage = 0;
 			makedizzy = false;
+		}
+
+		// MOD: gore - remember where a chr was shot: its corpse bleeds under
+		// those parts (splat.c, splatTickChr()). A hit chr's hit part is the
+		// torso for a chr's own bullets (HITPART_GENERAL was made one above)
+		if (isshoot && !usedshield && damage > 0 && vprop->type == PROPTYPE_CHR
+				&& hitpart > 0 && hitpart <= HITPART_TAIL
+				&& gset && weaponHost(gset->weaponnum) != WEAPON_TRANQUILIZER) {
+			chr->woundmask |= 1u << hitpart;
 		}
 
 		// Handle situations where the player is the one being shot, then return
@@ -4919,17 +5351,27 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 		// NPC was alive prior to being shot.
 
 		// Handle aibot/chr losing gun
-		if (gsetHasFunctionFlags(gset, FUNCFLAG_DISARM)
-				&& ((chr->flags & CHRFLAG0_CANLOSEGUN) || chr->aibot)) {
+		if (chrCanBeDisarmed(chr) && ((gsetHasFunctionFlags(gset, FUNCFLAG_DISARM)
+				&& ((chr->flags & CHRFLAG0_CANLOSEGUN) || chr->aibot))
+#ifndef PLATFORM_N64
+				// Perfect Random: a shield that absorbed this hit protects the gun
+				// even if the shot depleted the shield.
+				|| (hitpart == HITPART_GUN && !usedshield && modRandomIsOn() && !chr->aibot
+					&& aprop && aprop->type == PROPTYPE_PLAYER)
+#endif
+				)) {
 			if (chr->aibot) {
 				botDisarm(chr, aprop);
 			} else {
+				bool droppedgun = false;
+
 				weapon = chrGetHeldProp(chr, HAND_RIGHT);
 
 				if (weapon) {
 					chr->gunprop = weapon;
 					objSetDropped(weapon, DROPTYPE_DEFAULT);
 					chr->hidden |= CHRHFLAG_DROPPINGITEM;
+					droppedgun = true;
 				}
 
 				weapon = chrGetHeldProp(chr, HAND_LEFT);
@@ -4938,9 +5380,26 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 					chr->gunprop = weapon;
 					objSetDropped(weapon, DROPTYPE_DEFAULT);
 					chr->hidden |= CHRHFLAG_DROPPINGITEM;
+					droppedgun = true;
 				}
+
+#ifndef PLATFORM_N64
+				// Perfect Random: a guard whose gun is shot out of its hand
+				// very likely gives up
+				if (droppedgun && hitpart == HITPART_GUN && modRandomIsOn()) {
+					modRandomOnGunShotOut(chr);
+				}
+#endif
 			}
 		}
+
+#ifndef PLATFORM_N64
+		// MOD: already waiting out a roll and this hit is lethal: die now
+		if (chr->actiontype == ACT_PREARGH && chr->damage >= chr->maxdamage && !chr->aibot) {
+			chrReactToDamage(chr, vector, angle, hitpart, gset, aplayernum);
+			return;
+		}
+#endif
 
 		// Handle chr damage
 		if (chr->damage < chr->maxdamage
@@ -4993,7 +5452,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 
 #endif
 			// Handle one-hit knockouts
-			if (onehitko && chr->aibot == NULL && race == RACE_HUMAN) {
+			if (onehitko && !skedarMelee && chr->aibot == NULL && race == RACE_HUMAN) {
 #ifdef PD_PHYSICS
 				// MOD: ragdoll physics - knockouts fall as ragdolls
 				ragdollOnChrKnockOut(chr, vector, hitpart, gset);
@@ -5016,6 +5475,15 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 			// Don't enter this branch if there is no damage to give,
 			// or we are making a chr dizzy in solo mode (unless force is set)
 			if (damage > 0 && (g_Vars.normmplayerisrunning || !makedizzy || forceapplydamage)) {
+				// MOD: Skedar (and the Skedar King) have 50% more HP: they take
+				// two thirds of the damage, whatever their script set maxdamage to.
+				if (chr->bodynum == BODY_SKEDAR || chr->bodynum == BODY_SKEDARKING) {
+					damage *= (1.0f / 1.5f);
+				}
+				if ((chr->hidden2 & CHRH2FLAG_BLONDREVENGE) && hitpart == HITPART_HEAD
+						&& chr->damage <= 0.0f && damage >= chr->maxdamage) {
+					damage = chr->maxdamage * 0.75f;
+				}
 				f32 amount = damage;
 
 				if (chr->damage + damage > chr->maxdamage) {
@@ -5029,6 +5497,7 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 				chr->damage += damage;
 				chr->lastattacker = (aprop ? aprop->chr : NULL);
 				chr->chrflags |= CHRCFLAG_JUST_INJURED;
+				modRandomObjectiveReactToPlayer(chr, aprop);
 
 				if (chr->aibot) {
 					if (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_ONEHITKILLS)) {
@@ -5139,7 +5608,12 @@ void chrDamage(struct chrdata *chr, f32 damage, struct coord *vector, struct gse
 						// Cancel current animation and prepare for argh
 						f32 endframe = -1;
 
-						if (chrIsAnimPreventingArgh(chr, &endframe)) {
+						if (chrIsAnimPreventingArgh(chr, &endframe)
+#ifndef PLATFORM_N64
+								// MOD: a lethal hit kills at once, even mid attack roll
+								&& chr->damage < chr->maxdamage
+#endif
+								) {
 							if (endframe >= 0) {
 								modelSetAnimEndFrame(chr->model, endframe);
 							}
@@ -5188,7 +5662,13 @@ void chrDie(struct chrdata *chr, s32 aplayernum)
 		chrStopFiring(chr);
 		chrUncloak(chr, true);
 
+#ifndef PLATFORM_N64
+		chrRecordDeathOrder(chr);
+#endif
 		chr->actiontype = ACT_DIE;
+#ifndef PLATFORM_N64
+		chr->act_die.nextheadshotsprayframe = -1.0f;
+#endif
 		chr->act_die.notifychrindex = 0;
 		chr->sleep = 0;
 		chr->blurnumtimesdied++;
@@ -5286,6 +5766,11 @@ bool func0f03654c(struct chrdata *chr, struct coord *pos, RoomNum *rooms, struct
 
 	prop = chr->prop;
 
+#ifndef PLATFORM_N64
+	if (types == (CDTYPE_PATHBLOCKER | CDTYPE_BG) && !levelgenNpcPathHasFloor(pos, pos2)) {
+		return false;
+	}
+#endif
 	chrSetPerimEnabled(chr, false);
 #ifndef PLATFORM_N64
 	chrNavGetBbox(prop, &radius, &ymax, &ymin); // MOD: short chr navigation
@@ -6592,6 +7077,15 @@ bool chrHasLosToEntity(struct chrdata *chr, struct coord *chrpos, RoomNum *chrro
 	return result;
 }
 
+static bool chrUsesDrawnDownwardShot(const struct prop *shooter, const struct prop *target)
+{
+#ifdef PD_PHYSICS
+	return shooter && target && shooter->pos.y - target->pos.y > 120.0f && clipcheckArenaShotReady();
+#else
+	return false;
+#endif
+}
+
 bool chrHasLosToAttackTarget(struct chrdata *chr, struct coord *pos, RoomNum *rooms, bool allowextraheight)
 {
 	u32 attackflags = ATTACKFLAG_AIMATTARGET;
@@ -6602,6 +7096,24 @@ bool chrHasLosToAttackTarget(struct chrdata *chr, struct coord *pos, RoomNum *ro
 		entityid = chr->act_attack.entityid;
 	}
 
+#ifdef PD_PHYSICS
+	if (attackflags & ATTACKFLAG_AIMATTARGET) {
+		struct prop *target = chrGetTargetProp(chr);
+		if (chrUsesDrawnDownwardShot(chr->prop, target)) {
+			bool clear;
+			if (target->type == PROPTYPE_PLAYER && !g_Vars.bondvisible) return false;
+			chrSetPerimEnabled(chr, false);
+			propSetPerimEnabled(target, false);
+			clear = cdTestLos05(pos, rooms, &target->pos, target->rooms,
+				(CDTYPE_ALL & ~CDTYPE_BG) | CDTYPE_DOORSWITHOUTFLAG, GEOFLAG_BLOCK_SHOOT)
+				&& !clipcheckSegment(pos, &target->pos, 0, NULL, NULL);
+			propSetPerimEnabled(target, true);
+			chrSetPerimEnabled(chr, true);
+			if (clear) chrRecordLastVisibleTargetTime(chr);
+			return clear;
+		}
+	}
+#endif
 	return chrHasLosToEntity(chr, pos, rooms, allowextraheight, attackflags, entityid);
 }
 
@@ -6625,8 +7137,14 @@ bool chrHasLosToChr(struct chrdata *chr, struct chrdata *target, RoomNum *room)
 
 		func0f065e74(&prop->pos, prop->rooms, &pos, rooms);
 
+		s32 types = CDTYPE_OBJS | CDTYPE_DOORS | CDTYPE_PATHBLOCKER | CDTYPE_BG | CDTYPE_AIOPAQUE;
+#ifdef PD_PHYSICS
+		const bool drawn = chrUsesDrawnDownwardShot(prop, target->prop);
+		if (drawn) types &= ~CDTYPE_BG;
+		if (!drawn || !clipcheckSegment(&pos, &target->prop->pos, 0, NULL, NULL))
+#endif
 		if (cdTestLos07(&pos, rooms, &target->prop->pos, target->prop->rooms, sp88,
-					CDTYPE_OBJS | CDTYPE_DOORS | CDTYPE_PATHBLOCKER | CDTYPE_BG | CDTYPE_AIOPAQUE,
+					types,
 					GEOFLAG_BLOCK_SIGHT)) {
 			cansee = true;
 		}
@@ -7191,6 +7709,13 @@ bool chrTryAttackLie(struct chrdata *chr, u32 attackflags, s32 entityid)
 {
 	s32 race = CHRRACE(chr);
 
+#ifndef PLATFORM_N64
+	// Perfect Random: only guards with automatic weapons lie down to fire
+	if (modRandomIsOn() && !modRandomChrHasAutomaticWeapon(chr)) {
+		return false;
+	}
+#endif
+
 	if (race == RACE_HUMAN || race == RACE_SKEDAR) {
 		if (chrIsReadyForOrders(chr) && (chrGetHeldUsableProp(chr, 0) || chrGetHeldUsableProp(chr, 1))) {
 			chrAttackLie(chr, attackflags, entityid);
@@ -7295,7 +7820,8 @@ bool chrSetPath(struct chrdata *chr, u32 path_id)
 
 bool chrTryStartPatrol(struct chrdata *chr)
 {
-	struct path *path = pathFindById(chr->path);
+	struct path *path = modRandomGetPatrolPath(chr);
+	if (!path) path = pathFindById(chr->path);
 
 	if (path && chrIsReadyForOrders(chr)) {
 		chrStartPatrol(chr, path);
@@ -7307,7 +7833,11 @@ bool chrTryStartPatrol(struct chrdata *chr)
 
 bool chrTrySurrender(struct chrdata *chr)
 {
-	if (CHRRACE(chr) == RACE_HUMAN && chrIsReadyForOrders(chr)) {
+	if (CHRRACE(chr) == RACE_HUMAN && chrIsReadyForOrders(chr)
+#ifndef PLATFORM_N64
+			&& modRandomChrMaySurrender(chr)
+#endif
+			) {
 		chrSurrender(chr);
 		return true;
 	}
@@ -8331,7 +8861,7 @@ void chrFadeCorpseWhenOffScreen(struct chrdata *chr)
 {
 #ifdef PD_PHYSICS
 	// MOD: ragdoll physics - ragdoll corpses stay (Max Bodies limits them), unless it's Vanilla
-	if (chr->actiontype == ACT_DEAD && (!ragdollIsChrRagdolled(chr) || ragdollBodiesVanilla())) {
+	if (chr->actiontype == ACT_DEAD && !ragdollKeepsCorpse(chr)) {
 #else
 	if (chr->actiontype == ACT_DEAD) {
 #endif
@@ -8677,7 +9207,7 @@ void chrTickDie(struct chrdata *chr)
 #ifdef PD_PHYSICS
 
 		// MOD: ragdoll physics - a scripted death fall ends as a ragdoll
-		if (ragdollOnSpecialDieEnd(chr)) {
+		if (!(chr->hidden2 & CHRH2FLAG_SETTLECORPSE) && ragdollOnSpecialDieEnd(chr)) {
 			return;
 		}
 #endif
@@ -8746,18 +9276,15 @@ void chrTickDruggedComingUp(struct chrdata *chr)
 			}
 		}
 
-		weapon = chr->weapons_held[HAND_RIGHT];
+		if (!(chr->hidden2 & CHRH2FLAG_BLONDREVENGE)) {
+			for (s32 hand = 0; hand < 2; hand++) {
+				weapon = chr->weapons_held[hand];
 
-		if (weapon && (weapon->obj->flags & OBJFLAG_AIUNDROPPABLE) == 0) {
-			objSetDropped(weapon, DROPTYPE_DEFAULT);
-			chr->hidden |= CHRHFLAG_DROPPINGITEM;
-		}
-
-		weapon = chr->weapons_held[HAND_LEFT];
-
-		if (weapon && (weapon->obj->flags & OBJFLAG_AIUNDROPPABLE) == 0) {
-			objSetDropped(weapon, DROPTYPE_DEFAULT);
-			chr->hidden |= CHRHFLAG_DROPPINGITEM;
+				if (weapon && (weapon->obj->flags & OBJFLAG_AIUNDROPPABLE) == 0) {
+					objSetDropped(weapon, DROPTYPE_DEFAULT);
+					chr->hidden |= CHRHFLAG_DROPPINGITEM;
+				}
+			}
 		}
 
 		chrDropConcealedItems(chr);
@@ -9803,10 +10330,29 @@ void chrCalculateHit(struct chrdata *chr, bool *angleokptr, bool *hit, struct gs
 		}
 
 		// Apply difficulty multiplier (solo A = 0.6, SA = 0.8, PA = 1.175)
-		accuracy *= g_EnemyAccuracyScale;
+#ifndef PLATFORM_N64
+		if (modRandomIsOn()) {
+			// Perfect Random: every enemy starts at the selected difficulty's
+			// own accuracy (Agent 0.6, Special Agent 0.8, Perfect Agent 1.175),
+			// whatever a stage's setup left in the scale; the gauntlet's
+			// ramp is applied on top, below
+			const s32 diff = lvGetDifficulty();
 
-		// If the weapon fires more than once per tick, double the value to
-		// account for it. No weapons meet this criteria, however.
+			accuracy *= diff <= DIFF_A ? 0.6f : (diff == DIFF_SA ? 0.8f : (diff == DIFF_PD ? 1.1f : 1.175f));
+		} else {
+			accuracy *= g_EnemyAccuracyScale;
+		}
+#else
+		accuracy *= g_EnemyAccuracyScale;
+#endif
+
+		// Perfect Random Gauntlet: later missions' enemies shoot straighter
+		if (chr->team != TEAM_ALLY) {
+			accuracy *= modCareerAccuracyScale();
+		}
+
+		// A gun that is not automatic has no ticks per shot, and doubles the
+		// value - GoldenEye's AutomaticFiringRate <= 0 the same
 		if (weaponGetNumTicksPerShot(gset->weaponnum, gset->weaponfunc) <= 0) {
 			accuracy += accuracy;
 		}
@@ -9815,6 +10361,18 @@ void chrCalculateHit(struct chrdata *chr, bool *angleokptr, bool *hit, struct gs
 		if (gset->weaponnum == WEAPON_SHOTGUN) {
 			accuracy += accuracy;
 		}
+
+#ifndef PLATFORM_N64
+		// Perfect Random: a shotgun is deadly up close and slow (it fires once an
+		// attack). Its hit chance climbs the nearer the target is: x3 inside a
+		// metre and a half, fading to nothing extra at eight metres.
+		if (modRandomIsOn() && weaponHost(gset->weaponnum) == WEAPON_SHOTGUN) {
+			f32 closeness = (dist - 150.0f) / 650.0f;
+
+			closeness = closeness < 0.0f ? 0.0f : (closeness > 1.0f ? 1.0f : closeness);
+			accuracy *= 1.0f + 2.0f * (1.0f - closeness);
+		}
+#endif
 
 		chr->shotbondsum += accuracy;
 
@@ -10113,6 +10671,14 @@ const char var7f1a8ae4[] = "aimadjust=%d";
  */
 void chrTickShoot(struct chrdata *chr, s32 handnum)
 {
+#ifndef PLATFORM_N64
+	struct prop *target = chrGetTargetProp(chr);
+	if (modRandomIsOn() && target && target->type == PROPTYPE_PLAYER && target->chr
+			&& g_Vars.lvframe60 - chr->spawnreactionstart60 < TICKS(120)
+			&& chrCompareTeams(chr, target->chr, COMPARE_ENEMIES)) {
+		return;
+	}
+#endif
 	struct prop *chrprop = chr->prop;
 	struct prop *gunprop;
 	u8 isaibot = false;
@@ -10196,6 +10762,8 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 			f32 roty = chrGetAimAngle(chr);
 			f32 rotx = chrGetPitchAngle(chr);
 			bool extracdtypes = isaibot ? CDTYPE_PLAYERS : 0;
+			const bool drawnDownward = chrUsesDrawnDownwardShot(chrprop, targetprop);
+			const s32 background = drawnDownward ? 0 : CDTYPE_BG;
 
 			firingthisframe = true;
 
@@ -10221,10 +10789,15 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 			chrSetPerimEnabled(chr, false);
 
 			if (cdTestLos10(&chrprop->pos, chrprop->rooms, &gunpos, gunrooms,
-						CDTYPE_DOORS | CDTYPE_CHRS | CDTYPE_BG | CDTYPE_DOORSWITHOUTFLAG | extracdtypes,
+						CDTYPE_DOORS | CDTYPE_CHRS | background | CDTYPE_DOORSWITHOUTFLAG | extracdtypes,
 						GEOFLAG_BLOCK_SHOOT) == CDRESULT_COLLISION) {
 				firingthisframe = false;
 			}
+#ifdef PD_PHYSICS
+			if (drawnDownward && clipcheckSegment(&chrprop->pos, &gunpos, 0, NULL, NULL)) {
+				firingthisframe = false;
+			}
+#endif
 
 			chrSetPerimEnabled(chr, true);
 
@@ -10282,6 +10855,16 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 				hitpos.y = gunpos.y + vector.y * 65536.0f;
 				hitpos.z = gunpos.z + vector.z * 65536.0f;
 
+#ifdef PD_PHYSICS
+				if (drawnDownward) {
+					struct coord wall;
+					cdtypes &= ~CDTYPE_BG;
+					if (clipcheckSegment(&gunpos, &hitpos, 0, &wall, NULL)) {
+						hitpos = wall;
+						hitsomething = true;
+					}
+				}
+#endif
 				chrSetPerimEnabled(chr, false);
 
 				if (isaibot) {
@@ -10587,6 +11170,7 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 								chrCalculateShieldHit(targetchr, &hitpos, &vector, &node, &hitpart, &model, &side);
 							}
 
+							chrShotBlood(targetchr, targetprop, &gunpos, &hitpos, &vector, chr); // MOD: gore
 							func0f0341dc(targetchr, damage, &vector, &gset, chr->prop, HITPART_GENERAL, targetprop, node, model, side, NULL);
 #ifdef PD_PHYSICS
 							}
@@ -10622,6 +11206,7 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 									}
 
 									chrEmitSparks(hitchr, hitprop, hitpart, &hitpos, &vector, chr);
+									chrShotBlood(hitchr, hitprop, &gunpos, &hitpos, &vector, chr); // MOD: gore
 									func0f0341dc(hitchr, damage, &vector, &gset, chr->prop, HITPART_GENERAL, hitprop, node, model, side, NULL);
 								} else {
 									makebeam = false;
@@ -10734,6 +11319,11 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 		osSyncPrintf("firing(%d) %d, beam(%d) %s", handnum, firingthisframe, handnum);
 		osSyncPrintf("on");
 		osSyncPrintf("off");
+
+		if (firingthisframe && (chr->hidden2 & CHRH2FLAG_ASSASSINCLOAK)
+				&& modRandomAssassinCloakActive()) {
+			chrUncloakTemporarily(chr);
+		}
 
 		chrUpdateFireslot(chr, handnum, firingthisframe, firingthisframe && makebeam, &gunpos, &hitpos);
 
@@ -11376,6 +11966,8 @@ void chrTickAttack(struct chrdata *chr)
 			return;
 		}
 
+		chrDecloakForAttack(chr, (chr->actiontype != ACT_ATTACK || !(chr->act_attack.flags & ATTACKFLAG_AIMONLY))
+				&& (chr->act_attack.firegun[HAND_LEFT] || chr->act_attack.firegun[HAND_RIGHT]));
 		modelSetAnimation(model, chr->act_attack.animcfg->animnum, chr->act_attack.flip,
 				chr->act_attack.animcfg->unk10, chrGetRangedSpeed(chr, 0.5f, 0.8f), 16);
 		func0f031254(chr);
@@ -11386,6 +11978,8 @@ void chrTickAttack(struct chrdata *chr)
 		if (curframe >= modelGetAnimEndFrame(model)) {
 			chr->act_attack.animcfg = var80067d70;
 
+			chrDecloakForAttack(chr, (chr->actiontype != ACT_ATTACK || !(chr->act_attack.flags & ATTACKFLAG_AIMONLY))
+					&& (chr->act_attack.firegun[HAND_LEFT] || chr->act_attack.firegun[HAND_RIGHT]));
 			modelSetAnimation(model, chr->act_attack.animcfg->animnum, chr->act_attack.flip,
 					chr->act_attack.animcfg->unk10, chrGetRangedSpeed(chr, 0.5f, 0.8f), 16);
 		}
@@ -12645,7 +13239,11 @@ struct prop *chrOpenDoor(struct chrdata *chr, struct coord *rangepos)
 		struct doorobj *door = doorprop->door;
 
 #if VERSION >= VERSION_NTSC_1_0
-		if (chr->aibot || (door->base.flags2 & OBJFLAG2_AICANNOTUSE) == 0)
+		if (chr->aibot || (door->base.flags2 & OBJFLAG2_AICANNOTUSE) == 0
+#ifndef PLATFORM_N64
+				|| modAlarmGuardOpensAnyDoor(chr)
+#endif
+				)
 #else
 		if (chr->aibot
 				|| (door->base.flags2 & OBJFLAG2_AICANNOTUSE) == 0
@@ -12655,12 +13253,27 @@ struct prop *chrOpenDoor(struct chrdata *chr, struct coord *rangepos)
 			f32 xdiff = doorprop->pos.x - chr->prop->pos.x;
 			f32 zdiff = doorprop->pos.z - chr->prop->pos.z;
 
-			if (xdiff * xdiff + zdiff * zdiff < 200 * 200 || (door->doorflags & DOORFLAG_DAMAGEONCONTACT)) {
+			f32 reach = (geRoomActive() && modRandomIsOn()) ? 350.0f : 200.0f;
+
+			if (xdiff * xdiff + zdiff * zdiff < reach * reach || (door->doorflags & DOORFLAG_DAMAGEONCONTACT)) {
 				chrGoPosClearRestartTtl(chr);
 				doorsChooseSwingDirection(chr->prop, doorprop->door);
 
 				if (!doorCallLift(doorprop, false)) {
-					doorsRequestMode(doorprop->door, DOORMODE_OPENING);
+					// GoldenEye's converted swing doors can keep their original
+					// collision leaf after a normal opening request. A guard then
+					// retries the same door forever. In Perfect Random/GE missions,
+					// make the AI's door interaction finish immediately so the nav
+					// route sees the portal as clear on the next tick.
+					if (geRoomActive() && (modRandomHasReinforcements() || modRandomIsOn())) {
+						door->frac = door->maxfrac;
+						door->fracspeed = 0;
+						door->mode = DOORMODE_IDLE;
+						doorUpdateTiles(door);
+						doorActivatePortal(door);
+					} else {
+						doorsRequestMode(doorprop->door, DOORMODE_OPENING);
+					}
 				}
 			} else {
 				doorprop = NULL;
@@ -12671,6 +13284,31 @@ struct prop *chrOpenDoor(struct chrdata *chr, struct coord *rangepos)
 	}
 
 	return doorprop;
+}
+
+/**
+ * Perfect Random: open a closed door for a chr that has walked up to it.
+ * Used by the door sweep in modrandom.c instead of relying on the nav code
+ * to find the door as an obstacle.
+ */
+void modRandomOpenDoorFor(struct chrdata *chr, struct prop *doorprop)
+{
+	struct doorobj *door = doorprop->door;
+
+	chrGoPosClearRestartTtl(chr);
+	doorsChooseSwingDirection(chr->prop, door);
+
+	if (!doorCallLift(doorprop, false)) {
+		if (geRoomActive()) {
+			door->frac = door->maxfrac;
+			door->fracspeed = 0;
+			door->mode = DOORMODE_IDLE;
+			doorUpdateTiles(door);
+			doorActivatePortal(door);
+		} else {
+			doorsRequestMode(door, DOORMODE_OPENING);
+		}
+	}
 }
 
 /**
@@ -12698,6 +13336,23 @@ void chrNavTickMain(struct chrdata *chr, struct coord *nextpos, struct waydata *
 	// By default, do collision checks for everything except doors that AI can
 	// open, but if they're blocking a door then include all doors
 	cdtypes = (CDTYPE_ALL & ~CDTYPE_DOORS) | CDTYPE_DOORSLOCKEDTOAI;
+
+#ifndef PLATFORM_N64
+	// One that may open those doors walks up to them like any other
+	if (modAlarmGuardOpensAnyDoor(chr)) {
+		cdtypes &= ~CDTYPE_DOORSLOCKEDTOAI;
+	}
+
+	// A door left wide open is in the way like any other object on a level
+	// converted from GoldenEye, whose doors swing: Perfect Dark's slide away
+	// into the wall when open, so a door the AI can open was never an obstacle
+	// to steer round, only a thing to open. A swung leaf stands out into the
+	// room, and a guard cutting across to the player past one walked into it
+	// for good (Archives, Natalya's guard, F3 20261002-231301/231349).
+	if (geRoomActive()) {
+		cdtypes |= CDTYPE_OPENDOORS;
+	}
+#endif
 
 	if (chr->hidden & CHRHFLAG_BLOCKINGDOOR) {
 		cdtypes = CDTYPE_ALL;
@@ -13212,7 +13867,15 @@ void chrTickGoPos(struct chrdata *chr)
 #endif
 
 		// Goposforce was not set - restart the action to try and find a new route
-		chrGoToRoomPos(chr, &chr->act_gopos.endpos, chr->act_gopos.endrooms, chr->act_gopos.flags);
+		const bool found = chrGoToRoomPos(chr, &chr->act_gopos.endpos, chr->act_gopos.endrooms, chr->act_gopos.flags);
+#ifndef PLATFORM_N64
+		if (!found && levelgenIsStage(g_Vars.stagenum)) {
+			chrStand(chr);
+			return;
+		}
+#else
+		(void)found;
+#endif
 	}
 
 	chrGoPosConsiderRestart(chr);
@@ -14129,7 +14792,7 @@ void chraTickBg(void)
 #ifdef PD_PHYSICS
 				if ((chr->actiontype == ACT_DEAD
 						|| (chr->actiontype == ACT_DRUGGEDKO && (chr->chrflags & CHRCFLAG_KEEPCORPSEKO) == 0))
-						&& (!ragdollIsChrRagdolled(chr) || ragdollBodiesVanilla())) { // MOD: ragdoll physics - own limits (unless Max Bodies is Vanilla)
+						&& !ragdollKeepsCorpse(chr)) {
 #else
 				if (chr->actiontype == ACT_DEAD
 						|| (chr->actiontype == ACT_DRUGGEDKO && (chr->chrflags & CHRCFLAG_KEEPCORPSEKO) == 0)) {
@@ -14215,7 +14878,7 @@ void chraTickBg(void)
 #ifdef PD_PHYSICS
 				if ((chr->actiontype == ACT_DEAD
 						|| (chr->actiontype == ACT_DRUGGEDKO && chr->prop && (chr->chrflags & CHRCFLAG_KEEPCORPSEKO) == 0))
-						&& (!ragdollIsChrRagdolled(chr) || ragdollBodiesVanilla())) { // MOD: ragdoll physics - own limits (Ragdoll.RagdollMaxBodies), unless it's Vanilla
+						&& !ragdollKeepsCorpse(chr)) {
 #else
 				if (chr->actiontype == ACT_DEAD
 						|| (chr->actiontype == ACT_DRUGGEDKO && chr->prop && (chr->chrflags & CHRCFLAG_KEEPCORPSEKO) == 0)) {
@@ -14296,6 +14959,19 @@ f32 chrGetAngleToPos(struct chrdata *chr, struct coord *pos)
 	f32 fVar2;
 	f32 fVar4;
 	struct prop *prop;
+
+	// MOD: a chr whose prop pointer is not one of the level's props (a stale or
+	// corrupted chrdata) is not aimed from: it crashed here once (access violation)
+	if (chr == NULL || chr->prop == NULL || chr->prop < g_Vars.props || chr->prop >= g_Vars.props + g_Vars.maxprops) {
+		static s32 badprops = 0;
+
+		if (badprops < 5) {
+			badprops++;
+			sysLogPrintf(LOG_WARNING, "chrGetAngleToPos: chr %d has a bad prop pointer %p, no angle", chr ? chr->chrnum : -1, chr ? (void *) chr->prop : NULL);
+		}
+
+		return 0;
+	}
 
 	if (chr->prop->type == PROPTYPE_PLAYER) {
 		u32 playernum = playermgrGetPlayerNumByProp(chr->prop);
@@ -15363,57 +16039,39 @@ bool chrSetChrPresetToChrNearPos(u8 checktype, struct chrdata *chr, f32 distance
 
 bool chrCompareTeams(struct chrdata *chr1, struct chrdata *chr2, u8 checktype)
 {
-	if (chr1 && chr1->prop) {
-		if (checktype == COMPARE_ANY) {
-			return true;
-		}
-
-		if (checktype == COMPARE_FRIENDS) { // Return true if chrs are friends
-			if (g_Vars.normmplayerisrunning) {
-				if ((g_MpSetup.options & MPOPTION_TEAMSENABLED) && chr2->team == chr1->team) {
-					return true;
-				}
-			} else {
-				if (g_Vars.bond && g_Vars.bond->prop) {
-					struct chrdata *playerchr = g_Vars.bond->prop->chr;
-
-					// @bug: This makes Jon an ally in Duel
-					if ((chr2 == playerchr && chr1->headnum == HEAD_JONATHAN) ||
-							(chr1 == playerchr && chr2->headnum == HEAD_JONATHAN)) {
-						return true;
-					}
-				}
-
-				if ((chr2->team & chr1->team) != 0) {
-					return true;
-				}
-			}
-		} else if (checktype == COMPARE_ENEMIES) { // Return true if chrs are enemies
-			if (g_Vars.normmplayerisrunning) {
-				if ((g_MpSetup.options & MPOPTION_TEAMSENABLED) == 0 || chr2->team != chr1->team) {
-					return true;
-				}
-			} else {
-				if (g_Vars.bond && g_Vars.bond->prop) {
-					struct chrdata *playerchr = g_Vars.bond->prop->chr;
-
-					// @bug: This makes Jon an ally in Duel
-					if ((chr2 == playerchr && chr1->headnum == HEAD_JONATHAN) ||
-							(chr1 == playerchr && chr2->headnum == HEAD_JONATHAN)) {
-						return false;
-					}
-				}
-
-				if ((chr2->team & chr1->team) == 0) {
-					return true;
-				}
-			}
-		}
-
+	if (!chr1 || !chr1->prop) {
+		return false;
+	}
+	if (checktype == COMPARE_ANY) {
+		return true;
+	}
+	if (!chr2 || (checktype != COMPARE_FRIENDS && checktype != COMPARE_ENEMIES)) {
 		return false;
 	}
 
-	return false;
+	const bool invader1 = chr1->team == MODEVENT_TEAM_MAIAN && (chr1->hidden2 & CHRH2FLAG_MAIANINVADER);
+	const bool invader2 = chr2->team == MODEVENT_TEAM_MAIAN && (chr2->hidden2 & CHRH2FLAG_MAIANINVADER);
+	if (invader1 || invader2) {
+		return (invader1 && invader2) == (checktype == COMPARE_FRIENDS);
+	}
+
+
+	if (g_Vars.normmplayerisrunning) {
+		const bool teammates = (g_MpSetup.options & MPOPTION_TEAMSENABLED) && chr2->team == chr1->team;
+		return teammates == (checktype == COMPARE_FRIENDS);
+	}
+
+	// The scripted Jonathan uses a nominal enemy team in some story missions.
+	if ((chr1->headnum == HEAD_JONATHAN || chr2->headnum == HEAD_JONATHAN)
+			&& g_Vars.bond && g_Vars.bond->prop && g_Vars.stagenum != STAGE_DUEL && !modRandomIsOn()) {
+		struct chrdata *playerchr = g_Vars.bond->prop->chr;
+		if ((chr2 == playerchr && chr1->headnum == HEAD_JONATHAN)
+				|| (chr1 == playerchr && chr2->headnum == HEAD_JONATHAN)) {
+			return checktype == COMPARE_FRIENDS;
+		}
+	}
+
+	return ((chr2->team & chr1->team) != 0) == (checktype == COMPARE_FRIENDS);
 }
 
 void chrSetChrPreset(struct chrdata *chr, s32 chrpreset)
@@ -15682,6 +16340,9 @@ struct prop *chrSpawnAtCoord(s32 bodynum, s32 headnum, struct coord *pos, RoomNu
 	struct coord pos2;
 	RoomNum rooms2[8];
 	s32 stack;
+	if (modRandomIsOn()) {
+		headnum = modHeadsUnpack(headnum);
+	}
 
 	if (chrsGetNumFree() > 1) {
 		if (headnum < 0) {
@@ -15718,6 +16379,11 @@ struct prop *chrSpawnAtCoord(s32 bodynum, s32 headnum, struct coord *pos, RoomNu
 #if VERSION >= VERSION_NTSC_1_0
 					chr->hidden2 |= CHRH2FLAG_SPAWNED;
 #endif
+
+					// MOD: the voice follows the body (model), not the head. A chr
+					// spawned here (script spawns and clones) never had one dealt.
+					chr->voicebox = modRandomVoiceIsFemale(bodynum, headnum)
+						? VOICEBOX_FEMALE : (u32)chr->chrnum % 3;
 
 					if (spawnflags & SPAWNFLAG_NOBLOOD) {
 						chr->noblood = true;
@@ -15787,18 +16453,48 @@ struct prop *chrSpawnAtCoord(s32 bodynum, s32 headnum, struct coord *pos, RoomNu
 	return NULL;
 }
 
+static void chrFemaleHostileSpawnLook(struct chrdata *basechr, s32 *body, s32 *head)
+{
+	s32 replacement;
+
+	if (basechr == NULL || basechr->team == TEAM_00 || basechr->team == TEAM_01
+			|| basechr->team == TEAM_ALLY || basechr->team == TEAM_NONCOMBAT
+			|| (basechr->team & (TEAM_01 | TEAM_ALLY)) != 0) {
+		return;
+	}
+
+	replacement = bodyFemaleGuardLook((g_Vars.stagenum * 257 + basechr->chrnum * 17 + *body) & 0x7fffffff,
+			*body, head);
+
+	if (replacement >= 0) {
+		*body = replacement;
+	}
+}
+
 struct prop *chrSpawnAtPad(struct chrdata *basechr, s32 body, s32 head, s32 pad_id, u8 *ailist, u32 spawnflags)
 {
-	s32 resolved_pad_id = chrResolvePadId(basechr, pad_id);
+	s32 resolved_pad_id;
 	struct pad pad;
 	RoomNum room[2];
 	f32 fvalue;
+	struct prop *prop;
+#ifndef PLATFORM_N64
+	chrFemaleHostileSpawnLook(basechr, &body, &head);
+#endif
+	resolved_pad_id = chrResolvePadId(basechr, pad_id);
 	padUnpack(resolved_pad_id, PADFIELD_POS | PADFIELD_LOOK | PADFIELD_ROOM, &pad);
 	fvalue = atan2f(pad.look.x, pad.look.z);
 	room[0] = pad.room;
 	room[1] = -1;
 
-	return chrSpawnAtCoord(body, head, &pad.pos, &room[0], fvalue, ailist, spawnflags);
+	prop = chrSpawnAtCoord(body, head, &pad.pos, &room[0], fvalue, ailist, spawnflags);
+#ifndef PLATFORM_N64
+	if (g_ChrSpawnTrace) {
+		extern void sysLogPrintf(s32 level, const char *fmt, ...);
+		sysLogPrintf(0, "chr: spawn body %d head %d at pad %d -> %s", body, head, pad_id, prop ? "ok" : "failed");
+	}
+#endif
+	return prop;
 }
 
 struct prop *chrSpawnAtChr(struct chrdata *basechr, s32 body, s32 head, u32 chrnum, u8 *ailist, u32 spawnflags)
@@ -15806,6 +16502,9 @@ struct prop *chrSpawnAtChr(struct chrdata *basechr, s32 body, s32 head, u32 chrn
 	struct chrdata *chr = chrFindById(basechr, chrnum);
 	f32 fvalue;
 
+#ifndef PLATFORM_N64
+	chrFemaleHostileSpawnLook(basechr, &body, &head);
+#endif
 	if (1) {
 		fvalue = chrGetInverseTheta(chr);
 	}
@@ -15864,7 +16563,8 @@ void func0f04b740(void)
 	// empty
 }
 
-bool chrMoveToPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms, f32 angle, bool force)
+static bool chrMoveToPosInternal(struct chrdata *chr, struct coord *pos, RoomNum *rooms,
+		f32 angle, bool force, bool checked)
 {
 	struct coord pos2;
 	RoomNum rooms2[8];
@@ -15882,9 +16582,9 @@ bool chrMoveToPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms, f32 an
 	propSetPerimEnabled(chr->prop, false);
 
 #if VERSION >= VERSION_NTSC_1_0
-	if (chrAdjustPosForSpawn(chr->radius, &pos2, rooms2, angle, (chr->hidden & CHRHFLAG_WARPONSCREEN) != 0, force, (chr->hidden & CHRHFLAG_SPAWNONLYSURROUNDING) != 0))
+	if (checked || chrAdjustPosForSpawn(chr->radius, &pos2, rooms2, angle, (chr->hidden & CHRHFLAG_WARPONSCREEN) != 0, force, (chr->hidden & CHRHFLAG_SPAWNONLYSURROUNDING) != 0))
 #else
-	if (chrAdjustPosForSpawn(chr->radius, &pos2, rooms2, angle, (chr->hidden & CHRHFLAG_WARPONSCREEN) != 0, force))
+	if (checked || chrAdjustPosForSpawn(chr->radius, &pos2, rooms2, angle, (chr->hidden & CHRHFLAG_WARPONSCREEN) != 0, force))
 #endif
 	{
 		ground = cdFindGroundInfoAtCyl(&pos2, chr->radius, rooms2, &chr->floorcol,
@@ -15927,6 +16627,16 @@ bool chrMoveToPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms, f32 an
 	propSetPerimEnabled(chr->prop, true);
 
 	return result;
+}
+
+bool chrMoveToPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms, f32 angle, bool force)
+{
+	return chrMoveToPosInternal(chr, pos, rooms, angle, force, false);
+}
+
+void chrMoveToCheckedPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms, f32 angle)
+{
+	chrMoveToPosInternal(chr, pos, rooms, angle, false, true);
 }
 
 bool chrCheckCoverOutOfSight(struct chrdata *chr, s32 covernum, bool soft)
@@ -16488,36 +17198,97 @@ bool chr0f04c874(struct chrdata *chr, u32 angle360, struct coord *pos, u8 arg3, 
  *
  * Elements 7 onwards are chrnums. Each team is terminated with -2.
  */
-void rebuildTeams(void)
+/**
+ * MOD: bounds fix. Stock allocated 264 entries (32 chrs a team) and only
+ * checked the end after finishing a whole team, so more than about 257 chrs
+ * wrote past the list. The size now follows the stage's chr slots: a chr can be
+ * in every team, so the worst case is every slot in all MAX_TEAMS lists, plus
+ * the header and a terminator for each team. Never less than stock's.
+ */
+s32 teamListSizeFor(s32 numslots)
 {
-	s32 numchrs = chrsGetNumSlots();
-	s16 index = 7;
+	s32 size = (MAX_TEAMS - 1) + numslots * MAX_TEAMS + MAX_TEAMS;
+	s32 stock = (MAX_CHRSPERTEAM + 1) * MAX_TEAMS;
+
+	if (size < stock) {
+		size = stock;
+	}
+
+	// the offsets in the header are s16
+	return size > 32000 ? 32000 : size;
+}
+
+s32 squadronListSizeFor(s32 numslots)
+{
+	s32 size = (MAX_SQUADRONS - 1) + numslots + MAX_SQUADRONS;
+	s32 stock = (MAX_CHRSPERSQUADRON + 1) * MAX_SQUADRONS;
+
+	if (size < stock) {
+		size = stock;
+	}
+
+	return size > 32000 ? 32000 : size;
+}
+
+/**
+ * Fill list, which holds size entries, from the given chr slots. Every team
+ * always gets its terminator: when the list is too small a chr is left out
+ * instead (counted in the return value) and nothing is written past size.
+ */
+s32 teamListBuild(s16 *list, s32 size, struct chrdata *slots, s32 numslots)
+{
+	s32 index = MAX_TEAMS - 1;
+	s32 dropped = 0;
 	s32 team;
 	s32 i;
-	struct chrdata *chr;
-	u8 teammasks[] = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80 };
 
-	for (team = 0; team < ARRAYCOUNT(teammasks); team++) {
+	for (team = 0; team < MAX_TEAMS; team++) {
+		u8 mask = 1 << team;
+
 		if (team != 0) {
-			g_TeamList[team - 1] = index;
+			list[team - 1] = index;
 		}
 
-		for (i = 0; i < numchrs; i++) {
-			chr = &g_ChrSlots[i];
+		for (i = 0; i < numslots; i++) {
+			struct chrdata *chr = &slots[i];
 
-			if (chr->chrnum >= 0 && (chr->team & teammasks[team])) {
-				g_TeamList[index] = chr->chrnum;
+			if (chr->chrnum >= 0 && (chr->team & mask)) {
+				// keep room for this team's terminator and every later team's
+				if (index + 1 + (MAX_TEAMS - team) > size) {
+					dropped++;
+					continue;
+				}
+
+				list[index] = chr->chrnum;
 				index++;
 			}
 		}
 
-		g_TeamList[index] = -2;
+		list[index] = -2;
 		index++;
-
-		if (index >= (MAX_CHRSPERTEAM + 1) * MAX_TEAMS) {
-			break;
-		}
 	}
+
+	return dropped;
+}
+
+s32 g_TeamListSize = 0;
+s32 g_SquadronListSize = 0;
+
+void rebuildTeams(void)
+{
+	s32 dropped;
+
+	if (g_TeamList == NULL) {
+		return;
+	}
+
+	dropped = teamListBuild(g_TeamList, g_TeamListSize, g_ChrSlots, chrsGetNumSlots());
+
+#ifndef PLATFORM_N64
+	if (dropped > 0) {
+		sysLogPrintf(LOG_WARNING, "TEAMS: the team list is full (%d): %d chrs left out", g_TeamListSize, dropped);
+	}
+#endif
 }
 
 /**
@@ -16530,36 +17301,56 @@ void rebuildTeams(void)
  *
  * Elements 15 onwards are chrnums. Each squadron is terminated with -2.
  */
-void rebuildSquadrons(void)
+s32 squadronListBuild(s16 *list, s32 size, struct chrdata *slots, s32 numslots)
 {
-	s32 numchrs = chrsGetNumSlots();
-	s16 index = 15;
+	s32 index = MAX_SQUADRONS - 1;
+	s32 dropped = 0;
 	s32 squadron;
 	s32 i;
 
 	for (squadron = 0; squadron < MAX_SQUADRONS; squadron++) {
 		if (squadron != 0) {
-			g_SquadronList[squadron - 1] = index;
+			list[squadron - 1] = index;
 		}
 
-		for (i = 0; i < numchrs; i++) {
-			struct chrdata *chr = &g_ChrSlots[i];
+		for (i = 0; i < numslots; i++) {
+			struct chrdata *chr = &slots[i];
 
 			if (chr->chrnum >= 0 && chr->squadron == squadron) {
 				if (chr->prop == NULL || chr->prop->type != PROPTYPE_PLAYER) {
-					g_SquadronList[index] = chr->chrnum;
+					if (index + 1 + (MAX_SQUADRONS - squadron) > size) {
+						dropped++;
+						continue;
+					}
+
+					list[index] = chr->chrnum;
 					index++;
 				}
 			}
 		}
 
-		g_SquadronList[index] = -2;
+		list[index] = -2;
 		index++;
-
-		if (index >= (MAX_CHRSPERSQUADRON + 1) * MAX_SQUADRONS) {
-			break;
-		}
 	}
+
+	return dropped;
+}
+
+void rebuildSquadrons(void)
+{
+	s32 dropped;
+
+	if (g_SquadronList == NULL) {
+		return;
+	}
+
+	dropped = squadronListBuild(g_SquadronList, g_SquadronListSize, g_ChrSlots, chrsGetNumSlots());
+
+#ifndef PLATFORM_N64
+	if (dropped > 0) {
+		sysLogPrintf(LOG_WARNING, "SQUADRONS: the squadron list is full (%d): %d chrs left out", g_SquadronListSize, dropped);
+	}
+#endif
 }
 
 s16 *teamGetChrIds(s32 team_id)

@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modoptions.h"
 #include "lib/sched.h"
 #include "constants.h"
 #include "game/camera.h"

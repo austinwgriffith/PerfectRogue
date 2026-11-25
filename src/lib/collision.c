@@ -14,6 +14,7 @@
 #include "lib/libc/ll.h"
 #include "data.h"
 #include "types.h"
+#include "system.h"
 
 #define SURFACE_FLOOR   0
 #define SURFACE_CEILING 1
@@ -1281,6 +1282,12 @@ void cdCollectGeoForCylFromList(struct coord *pos, f32 radius, u8 *start, u8 *en
 			}
 
 			geo = (struct geo *)((uintptr_t)geo + 0x18);
+		} else {
+			// MOD: a type that is none of the four has no size to step by:
+			// the loop never ended (hang after leaving a converted level)
+			sysLogPrintf(LOG_ERROR, "CD: room %d's tile list has an unknown geo type %d at offset %d of %d, list abandoned",
+					(int)roomnum, (int)geo->type, (int)((u8 *)geo - start), (int)(end - start));
+			break;
 		}
 	}
 }

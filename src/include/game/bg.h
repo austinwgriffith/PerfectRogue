@@ -4,6 +4,11 @@
 #include "data.h"
 #include "types.h"
 
+// MOD: bounds fix. One room number per onscreen prop for bgRenderScene and the
+// xlu pass; stock had these as 200-entry arrays on the stack. Sized in varsReset().
+extern RoomNum *g_BgRoomNumsByProp;
+extern s32 g_BgRoomNumsByPropLen;
+
 void bgUnpausePropsInRoom(u32 roomnum, bool tintedglassonly);
 void bgSetRoomOnscreen(s32 room, s32 draworder, struct screenbox *arg2);
 void bgGetRoomBrightnessRange(s32 roomnum, u8 *min, u8 *max);

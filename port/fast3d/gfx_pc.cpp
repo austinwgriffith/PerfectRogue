@@ -26,6 +26,7 @@
 #include "platform.h"
 
 #include "gfx_pc.h"
+#include "hdtext.h"
 #include "gfx_cc.h"
 #include "gfx_window_manager_api.h"
 #include "gfx_rendering_api.h"
@@ -149,6 +150,7 @@ struct LoadedTexture {
     uint32_t line_size_bytes;
     uint32_t tex_flags;
     struct RawTexMetadata raw_tex_metadata;
+    uint32_t glyph; // MOD: HD text
 };
 
 static struct RDP {
@@ -161,7 +163,9 @@ static struct RDP {
         uint32_t width;
         uint32_t tex_flags;
         struct RawTexMetadata raw_tex_metadata;
+        uint32_t glyph; // MOD: HD text
     } texture_to_load;
+    uint32_t pending_glyph; // MOD: HD text - set by gDPSetFontGlyphEXT, taken by the next set texture image
     struct {
         uint8_t fmt;
         uint8_t siz;
@@ -972,15 +976,38 @@ static void import_texture(int i, int tile, bool importReplacement) {
     const uint8_t* orig_addr = loaded_texture.addr;
     SUPPORT_CHECK(orig_addr);
 
+    // MOD: HD text - a glyph adds its name to the key. textRender's outline
+    // pass draws one glyph through both banks of its palette in a single
+    // two-cycle draw: tile 0 is body plus border, tile 1 the body alone. A
+    // pack ships one picture for each, so the second bank asks for the fill.
+    uint32_t glyph = loaded_texture.glyph;
+    if (glyph && HDTEXT_GLYPH_IS_OUTLINE(glyph) && palette_index == 1) {
+        glyph &= ~0x7f000000u;
+    }
+
     TextureCacheKey key;
     if (fmt == G_IM_FMT_CI) {
-        key = { orig_addr, { rdp.palette_addrs[0], rdp.palette_addrs[1] }, fmt, siz, palette_index };
+        key = { orig_addr, { rdp.palette_addrs[0], rdp.palette_addrs[1] }, fmt, siz, palette_index, glyph };
     } else {
-        key = { orig_addr, {}, fmt, siz, palette_index };
+        key = { orig_addr, {}, fmt, siz, palette_index, glyph };
     }
 
     if (gfx_texture_cache_lookup(i, key)) {
         return;
+    }
+
+    // MOD: HD text - the pack's picture of this glyph, if it has one. It is
+    // the whole 16 texel wide block already, at an integer scale, and the
+    // UVs are normalised by the tile, so it needs no padding.
+    if (glyph && hdtextHaveGlyphs()) {
+        int32_t rep_width;
+        int32_t rep_height;
+        uint8_t* rep = hdtextLoadGlyph(glyph, &rep_width, &rep_height);
+
+        if (rep) {
+            gfx_rapi->upload_texture(rep, rep_width, rep_height, false);
+            return;
+        }
     }
 
     g_UploadCropWidth = gfx_tile_content_width(tile); // MOD: tile width
@@ -1890,6 +1917,8 @@ static void gfx_dp_set_texture_image(uint32_t format, uint32_t size, uint32_t wi
     rdp.texture_to_load.siz = size;
     rdp.texture_to_load.width = width;
     rdp.texture_to_load.tex_flags = tex_flags;
+    rdp.texture_to_load.glyph = rdp.pending_glyph; // MOD: HD text
+    rdp.pending_glyph = 0;
 }
 
 static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t tmem, uint8_t tile, uint32_t palette,
@@ -2000,6 +2029,7 @@ static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t
     loaded_texture.tex_flags = rdp.texture_to_load.tex_flags;
     loaded_texture.raw_tex_metadata = rdp.texture_to_load.raw_tex_metadata;
     loaded_texture.addr = rdp.texture_to_load.addr;
+    loaded_texture.glyph = rdp.texture_to_load.glyph; // MOD: HD text
 
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
 }
@@ -2040,6 +2070,7 @@ static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t 
     loaded_texture.tex_flags = rdp.texture_to_load.tex_flags;
     loaded_texture.raw_tex_metadata = rdp.texture_to_load.raw_tex_metadata;
     loaded_texture.addr = rdp.texture_to_load.addr + start_offset_bytes;
+    loaded_texture.glyph = rdp.texture_to_load.glyph; // MOD: HD text
 
     rdp.texture_tile[tile].uls = uls;
     rdp.texture_tile[tile].ult = ult;
@@ -2464,6 +2495,9 @@ static void gfx_run_dl(Gfx* cmd) {
                 gfx_dp_set_texture_image(C0(21, 3), C0(19, 2), C0(0, 10), 0, seg_addr(cmd->words.w1));
                 break;
             }
+            case G_SETFONTGLYPH_EXT: // MOD: HD text
+                rdp.pending_glyph = 0x80000000u | cmd->words.w1;
+                break;
             case G_SETTIMG_FB_EXT:
                 gfx_flush();
                 gfx_rapi->select_texture_fb(cmd->words.w1);
@@ -2775,7 +2809,39 @@ extern "C" void gfx_start_frame(void) {
 
 uint32_t num_dls = 0;
 
-extern "C" void gfx_run(Gfx* commands) {
+// MOD: screenshots for the level generator's load test (port/src/levelgenloadtest.c).
+// gfx_request_screenshot() asks for the next frame the game draws to be saved as a BMP.
+extern "C" int gfx_opengl_screenshot(int fb_id, uint32_t winw, uint32_t winh, const char *path, uint32_t maxw);
+static char gfx_screenshot_path[512];
+static uint32_t gfx_screenshot_maxw = 0; // 0: the whole picture
+
+extern "C" void gfx_request_screenshot(const char *path) {
+    snprintf(gfx_screenshot_path, sizeof(gfx_screenshot_path), "%s", path ? path : "");
+    gfx_screenshot_maxw = 0;
+}
+
+// the same, shrunk to at most maxw pixels across (the room tour's pictures)
+extern "C" void gfx_request_screenshot_small(const char *path, uint32_t maxw) {
+    snprintf(gfx_screenshot_path, sizeof(gfx_screenshot_path), "%s", path ? path : "");
+    gfx_screenshot_maxw = maxw;
+}
+
+// MOD: special event banner - the state the last overlay pass started from and
+// the scissor it drew with (window pixels), for the banner's log line
+static uint32_t gfx_overlay_aspect_in = 0;
+static XYWidthHeight gfx_overlay_scissor = {};
+
+extern "C" void gfx_overlay_get_info(uint32_t* aspectin, uint32_t* winw, uint32_t* winh, int32_t* scissor) {
+    *aspectin = gfx_overlay_aspect_in;
+    *winw = gfx_current_window_dimensions.width;
+    *winh = gfx_current_window_dimensions.height;
+    scissor[0] = gfx_overlay_scissor.x;
+    scissor[1] = gfx_overlay_scissor.y;
+    scissor[2] = gfx_overlay_scissor.width;
+    scissor[3] = gfx_overlay_scissor.height;
+}
+
+extern "C" bool gfx_run(Gfx* commands, Gfx* overlay) {
     ++num_dls;
     gfx_sp_reset();
 
@@ -2783,7 +2849,7 @@ extern "C" void gfx_run(Gfx* commands) {
 
     if (!gfx_wapi->start_frame()) {
         dropped_frame = true;
-        return;
+        return false;
     }
     dropped_frame = false;
 
@@ -2799,6 +2865,30 @@ extern "C" void gfx_run(Gfx* commands) {
     rendering_state.scissor = {};
     gfx_run_dl(commands);
     gfx_flush();
+
+    // Composite the HUD overlay after the scene, before MSAA resolve and swap.
+    if (overlay) {
+        if (fbActive) {
+            gfx_reset_framebuffer();
+            fbActive = false;
+        }
+        const RSP scene_rsp = rsp;
+        const RDP scene_rdp = rdp;
+        const bool scene_decal_scope = gfx_decal_clamp_scope;
+        gfx_decal_clamp_scope = false;
+        rdp.pending_glyph = 0;
+        gfx_overlay_aspect_in = rsp.aspect_mode;
+        gfx_run_dl(overlay);
+        gfx_overlay_scissor = rdp.scissor;
+        gfx_flush();
+        rsp = scene_rsp;
+        rdp = scene_rdp;
+        gfx_decal_clamp_scope = scene_decal_scope;
+        // The backend cache still describes the overlay's actual GL bindings.
+        rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+        rdp.viewport_or_scissor_changed = true;
+    }
+
     gfxFramebuffer = 0;
 
     if (game_renders_to_framebuffer) {
@@ -2820,8 +2910,28 @@ extern "C" void gfx_run(Gfx* commands) {
         }
     }
 
+    if (gfx_screenshot_path[0]) {
+        // the game's picture: its own framebuffer, or the window once a multisampled
+        // one has been resolved into it
+        int fb = 0;
+
+        if (game_renders_to_framebuffer) {
+            if (gfx_msaa_level > 1) {
+                const bool different_size = gfx_current_dimensions.width != gfx_current_game_window_viewport.width ||
+                                            gfx_current_dimensions.height != gfx_current_game_window_viewport.height;
+                fb = different_size ? game_framebuffer_msaa_resolved : 0;
+            } else {
+                fb = game_framebuffer;
+            }
+        }
+        gfx_opengl_screenshot(fb, gfx_current_window_dimensions.width, gfx_current_window_dimensions.height,
+                              gfx_screenshot_path, gfx_screenshot_maxw);
+        gfx_screenshot_path[0] = 0;
+    }
+
     gfx_rapi->end_frame();
     gfx_wapi->swap_buffers_begin();
+    return true;
 }
 
 extern "C" void gfx_end_frame(void) {
@@ -2912,6 +3022,8 @@ extern "C" void gfx_copy_framebuffer(int fb_dst, int fb_src, int left, int top, 
 }
 
 extern "C" void gfx_reset_framebuffer(void) {
-    gfx_rapi->start_draw_to_framebuffer(0, (float)gfx_current_dimensions.height / SCREEN_HEIGHT);
+    const int target = game_renders_to_framebuffer ? game_framebuffer : 0;
+    gfx_rapi->start_draw_to_framebuffer(target, (float)gfx_current_dimensions.height / SCREEN_HEIGHT);
     active_fb = framebuffers.end();
+    rdp.viewport_or_scissor_changed = true;
 }

@@ -14,6 +14,17 @@ void roomsReset(void)
 
 	g_RoomMtxNumSlots = PLAYERCOUNT() >= 2 ? 200 : 120;
 
+#ifndef PLATFORM_N64
+	// MOD (2026-11-16): a matrix for every room. The cache had 120 (200 split
+	// screen), enough for the stock levels; past that roomAllocateMtx() hands
+	// out slot 0 again, and every room drawn on it is moved to the last one
+	// put there. A generated level draws 200 rooms and more at once: its far
+	// roofs and streets vanished, leaving the props that stood on them.
+	if (g_RoomMtxNumSlots < g_Vars.roomcount + 8) {
+		g_RoomMtxNumSlots = g_Vars.roomcount + 8;
+	}
+#endif
+
 	g_RoomMtxAges = mempAlloc(ALIGN16(g_RoomMtxNumSlots), MEMPOOL_STAGE);
 	g_RoomMtxLinkedRooms = mempAlloc(ALIGN16(g_RoomMtxNumSlots * sizeof(*g_RoomMtxLinkedRooms)), MEMPOOL_STAGE);
 	g_RoomMtxBaseRooms = mempAlloc(ALIGN16(g_RoomMtxNumSlots * sizeof(*g_RoomMtxBaseRooms)), MEMPOOL_STAGE);

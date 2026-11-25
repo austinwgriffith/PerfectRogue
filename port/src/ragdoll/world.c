@@ -5,6 +5,8 @@
  */
 
 #include "rd_internal.h"
+#include <string.h>
+#include "guardvoice.h"
 #include "lib/snd.h"
 #include "game/file.h"
 #ifdef PD_GRAVITY
@@ -205,8 +207,9 @@ void ragdollBodyHitsActor(struct ragdollprop *rp, pdphysPropImpact *pi)
 
 	// Where it hit him decides the flinch; it came from where the body was
 	rel = (pi->pos[1] - chr->manground) / (chr->height > 30.0f ? chr->height : 160.0f);
-	hitpart = rel > 0.85f ? HITPART_HEAD : rel > 0.45f ? HITPART_TORSO : rel > 0.3f ? HITPART_PELVIS
-		: (rngRandom() & 1) ? HITPART_LTHIGH : HITPART_RTHIGH;
+	// A body striking an NPC is not a leg wound. Using a thigh here leaves
+	// chr->hitpart set and makes the NPC limp on its next move order.
+	hitpart = rel > 0.85f ? HITPART_HEAD : rel > 0.45f ? HITPART_TORSO : HITPART_PELVIS;
 
 	from.x = chr->prop->pos.x - pi->dir[0] * 100.0f;
 	from.y = chr->prop->pos.y;
@@ -500,10 +503,11 @@ static void ragdollScream(struct ragdoll *rd)
 	s32 sound = -1;
 
 	rd->scream60 = rd->age60 > 0 ? rd->age60 : 1;
+	if (guardVoiceTryReaction(chr)) return;
 
 	// Women: Cassandra's screams as she dies in Attack Ship, an MP3. The
 	// game plays one MP3 at a time, so not over a voice line (no scream)
-	if (CHRRACE(chr) == RACE_HUMAN && !g_HeadsAndBodies[chr->headnum].ismale && sndIsPlayingMp3()) {
+	if (CHRRACE(chr) == RACE_HUMAN && !g_HeadsAndBodies[chr->bodynum].ismale && sndIsPlayingMp3()) {
 		sysLogPrintf(LOG_NOTE, "RAGDOLL: chr %d would scream (%.1f s in the air) but a voice line is playing", RD_RDCHRNUM(rd), rd->screamair);
 		return;
 	}
@@ -515,7 +519,7 @@ static void ragdollScream(struct ragdoll *rd)
 	psStopSound(prop, PSTYPE_CHRCHOKE, 0);
 
 	if (CHRRACE(chr) == RACE_HUMAN) {
-		if (g_HeadsAndBodies[chr->headnum].ismale) {
+		if (g_HeadsAndBodies[chr->bodynum].ismale) {
 			if (rngRandom() % RD_SCREAM_WAVCHANCE == 0 && rdWavAvailable(RDWAV_SCREAM)) {
 				// At the body and following it, as loud as the game's scream there
 				rdWavPlay(RDWAV_SCREAM, prop, SFX_M1_SCREAM);

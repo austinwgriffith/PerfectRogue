@@ -251,8 +251,8 @@
     },
     {
         "id": "L_GUN_025",
-        "en": "Shotgun\n",
-        "gb": "Shotgun\n",
+        "en": "Super Shotgun\n",
+        "gb": "Super Shotgun\n",
         "jp": "ショットガン\n",
         "it": "Fucile a pompa\n",
         "fr": "Fusil pompe\n",
@@ -891,8 +891,8 @@
     },
     {
         "id": "L_GUN_089",
-        "en": "Shotgun Fire\n",
-        "gb": "Shotgun Fire\n",
+        "en": "Super Shotgun Fire\n",
+        "gb": "Super Shotgun Fire\n",
         "jp": "シングルショット\n",
         "it": "Fuoco a scoppio\n",
         "fr": "Tir simple\n",
@@ -2531,8 +2531,8 @@
     },
     {
         "id": "L_GUN_253",
-        "en": "Shotgun\n",
-        "gb": "Shotgun\n",
+        "en": "Super Shotgun\n",
+        "gb": "Super Shotgun\n",
         "jp": "ショット銃\n",
         "it": "Fuc.Pompa\n",
         "fr": "Fusil pompe\n",

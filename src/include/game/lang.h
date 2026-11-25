@@ -22,4 +22,7 @@ void langReload(void);
 void langSetEuropean(u32 arg0);
 void langSetJpnEnabled(bool enable);
 
+#ifndef PLATFORM_N64
+u16 langAddPortText(const char *text);
+#endif
 #endif

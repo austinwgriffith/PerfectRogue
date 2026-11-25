@@ -1,6 +1,11 @@
+#include <string.h>
 #include <ultra64.h>
+#include "game/modrandom.h"
+#include "game/modrules.h"
+#include "game/modoptions.h"
 #include "lib/sched.h"
 #include "constants.h"
+#include "prcompat.h"
 #ifdef PD_PHYSICS
 #include "ragdoll.h" // MOD: ragdoll physics
 #endif
@@ -9,6 +14,7 @@
 #include "game/chraction.h"
 #include "game/debug.h"
 #include "game/chr.h"
+#include "game/modspawnedit.h"
 #include "game/env.h"
 #include "game/prop.h"
 #include "game/propsnd.h"
@@ -52,10 +58,29 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "bodyview.h" // MOD: body awareness
+
+/**
+ * Stock draws and animates at most 30 live characters a frame; the rest are
+ * simply not drawn that frame, so a crowd flickers out at random. The
+ * spawn editor lifts that to the size of the chr pool (a Perfect Random mission keeps
+ * stock's 30).
+ */
+s32 modChrOnscreenCap(void)
+{
+	if (modSpawnEditIsOn()) {
+		return g_NumChrSlots;
+	}
+
+	return 30;
+}
+
 #endif
 #ifndef PLATFORM_N64
 #include "video.h"
 #include "game/lv.h" // MOD: high framerates - LV_STEPS240
+#ifndef PLATFORM_N64
+#include "system.h" // MOD: fall log
+#endif
 #endif
 
 void rng2SetSeed(u32 seed);
@@ -652,6 +677,12 @@ static void chrSetLadderBlocked(struct chrdata *chr)
 }
 #endif
 
+#ifndef PLATFORM_N64
+static s32 g_ChrFallStart60[1024];
+static s32 g_ChrFallLast60[1024];
+static f32 g_ChrFallMaxSpeed[1024];
+#endif
+
 bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f32 *mangroundptr)
 {
 	struct chrdata *chr = model->chr;
@@ -661,6 +692,9 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 	f32 ground;
 	RoomNum spfc[8];
 	f32 manground = chr->manground;
+#ifndef PLATFORM_N64
+	const s32 previousMove60 = chr->lastmoveok60;
+#endif
 	s32 race = CHRRACE(chr);
 	f32 yincrement = 0.0f;
 	bool inlift;
@@ -1022,6 +1056,48 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 					}
 #endif
 
+#ifndef PLATFORM_N64
+					// MOD: no walking off into a kill floor - a living chr standing on
+					// safe ground isn't moved onto one (a ravine's pit). Whatever moved
+					// it (walking, running, rolling, a push), the step is taken back
+					// and the chr stays at the edge, as the bots' hold above does; the
+					// AI's stuck handling then routes it another way. A chr already
+					// falling, dying or dead still goes over.
+					if ((floorflags & GEOFLAG_DIE) && prop->type == PROPTYPE_CHR && !chr->onladder
+							&& chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD && !chrIsDead(chr)
+							&& chr->fallspeed.y == 0.0f && !chr->fallpeakset
+							&& (arg2->x != prop->pos.x || arg2->z != prop->pos.z)) {
+						struct coord here = prop->pos;
+						RoomNum hererooms[8];
+						u16 herecol, hereflags = 0;
+						u8 heretype;
+						RoomNum hereroom;
+						s32 herelift;
+						struct prop *hereliftprop;
+						f32 hereground;
+
+						roomsCopy(prop->rooms, hererooms);
+						hereground = cdFindGroundInfoAtCyl(&here, chr->radius, hererooms,
+								&herecol, &heretype, &hereflags, &hereroom, &herelift, &hereliftprop);
+
+						if (hereground > -30000.0f && (hereflags & GEOFLAG_DIE) == 0) {
+							chr->lastmoveok60 = previousMove60;
+							chr->invalidmove = 1;
+							arg2->x = prop->pos.x;
+							arg2->y = prop->pos.y;
+							arg2->z = prop->pos.z;
+
+							roomsCopy(prop->rooms, spfc);
+
+							chr->pushspeed[0] = chr->pushspeed[1] = 0.0f;
+							chr->fallspeed.x = chr->fallspeed.z = 0.0f;
+
+							ground = cdFindGroundInfoAtCyl(arg2, chr->radius, spfc,
+									&chr->floorcol, &chr->floortype, &floorflags, &chr->floorroom, &inlift, &lift);
+						}
+					}
+#endif
+
 					if (inlift) {
 						chr->inlift = true;
 						chr->lift = lift;
@@ -1037,7 +1113,11 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 
 				chr->ground = ground;
 
-				if (chr->chrflags & CHRCFLAG_FORCETOGROUND) {
+				// Follow small steps while grounded.
+				if ((chr->chrflags & CHRCFLAG_FORCETOGROUND)
+						|| (prop->type == PROPTYPE_CHR && !chr->onladder && !chr->fallpeakset
+							&& chr->fallspeed.y == 0.0f && ground > -30000.0f && !(floorflags & GEOFLAG_DIE)
+							&& ground < chr->manground && chr->manground - ground <= 30.0f)) {
 					node = model->definition->rootnode;
 					nodetype = (u8)node->type;
 
@@ -1056,6 +1136,34 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 				} else {
 					if (chr->fallspeed.y != 0.0f || chr->ground < chr->manground) {
 						die = false;
+
+						// MOD: gore - the height of this fall, for the flinch on landing
+						if (!chr->fallpeakset || chr->manground > chr->fallpeak) {
+							chr->fallpeak = chr->manground;
+							chr->fallpeakset = 1;
+						}
+
+#ifndef PLATFORM_N64
+						// MOD: when this fall began, and its fastest speed, for the
+						// landing flinch (a flinch needs a real fall, not a step or
+						// a drop of the floor under the chr)
+						{
+							const s32 slot = chr - g_ChrSlots;
+
+							if (slot >= 0 && slot < 1024) {
+								if (g_ChrFallStart60[slot] == 0 || g_Vars.lvframe60 - g_ChrFallLast60[slot] > 4) {
+									g_ChrFallStart60[slot] = g_Vars.lvframe60 ? g_Vars.lvframe60 : 1;
+									g_ChrFallMaxSpeed[slot] = 0.0f;
+								}
+
+								g_ChrFallLast60[slot] = g_Vars.lvframe60;
+
+								if (-chr->fallspeed.y > g_ChrFallMaxSpeed[slot]) {
+									g_ChrFallMaxSpeed[slot] = -chr->fallspeed.y;
+								}
+							}
+						}
+#endif
 
 						if (prop->type == PROPTYPE_CHR && chr->manground <= -30000) {
 							die = true;
@@ -1076,6 +1184,49 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 						}
 
 						if (chr->manground <= chr->ground) {
+							// MOD: gore - landed from a height (not at the level's start,
+							// when chrs are still settling onto their pads): flinch as
+							// if shot in the leg
+#ifndef PLATFORM_N64
+							{
+								const s32 slot = chr - g_ChrSlots;
+								const bool tracked = slot >= 0 && slot < 1024 && g_ChrFallStart60[slot] != 0;
+								const s32 airframes = tracked ? (s32)(g_Vars.lvframe60 - g_ChrFallStart60[slot]) : 0;
+								const f32 drop = chr->fallpeak - chr->ground;
+								// a real fall: far enough, long enough in the air, and
+								// fast enough (a step down or a floor that moved is not)
+								const bool real = chr->fallpeakset && drop >= 300.0f && airframes >= 20
+										&& g_ChrFallMaxSpeed[slot < 1024 && slot >= 0 ? slot : 0] > 0.0f;
+								static s32 logged;
+
+								if (chr->fallpeakset && drop >= 60.0f && prop->type == PROPTYPE_CHR && logged < 120) {
+									logged++;
+									sysLogPrintf(LOG_NOTE, "fall: chr %d landed at (%.0f %.0f %.0f) room %d: dropped %.0f, %d frames in the air, top speed %.2f, floor type %d, lift %d, action %d, %s",
+											chr->chrnum, prop->pos.x, prop->pos.y, prop->pos.z, prop->rooms[0], drop, airframes,
+											tracked ? g_ChrFallMaxSpeed[slot] : 0.0f, chr->floortype, chr->inlift, chr->actiontype,
+											real && chr->ground > -30000.0f && !(floorflags & GEOFLAG_DIE)
+													&& g_Vars.lvframe60 > TICKS(180) ? "FLINCH" : "no flinch");
+								}
+
+								if (real && chr->ground > -30000.0f && !(floorflags & GEOFLAG_DIE)
+										&& g_Vars.lvframe60 > TICKS(180) && prop->type == PROPTYPE_CHR) {
+									chrFlinchFromFall(chr);
+								}
+
+								if (slot >= 0 && slot < 1024) {
+									g_ChrFallStart60[slot] = 0;
+								}
+							}
+#else
+							if (chr->fallpeakset && chr->fallpeak - chr->ground >= 300.0f
+									&& chr->ground > -30000.0f && !(floorflags & GEOFLAG_DIE)
+									&& g_Vars.lvframe60 > TICKS(180) && prop->type == PROPTYPE_CHR) {
+								chrFlinchFromFall(chr);
+							}
+#endif
+
+							chr->fallpeakset = 0;
+
 							chr->manground = chr->ground;
 							chr->sumground = chr->ground * (PAL ? 8.4175090789795f : 9.999998f);
 							chr->fallspeed.y = 0.0f;
@@ -1099,6 +1250,22 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 #ifdef PD_PHYSICS
 								ragdollOnBotDeath(chr, NULL, HITPART_GENERAL, NULL); // MOD: combat simulator ragdolls
 #endif
+							} else if (modRandomDeferTargetFall(chr)) {
+								// a rescue target: kept, to be brought back
+							} else if (prop->type == PROPTYPE_CHR && chr->model) {
+								// MOD: a guard that lands on a kill floor dies there
+								// through the normal damage path, and leaves a body
+								// (it used to vanish), counted as any other death
+								if (!chrIsDead(chr) && chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
+									struct coord dir = {0, -1, 0};
+									struct gset gset = {0};
+
+									chrDamageByMisc(chr, 10000, &dir, &gset, NULL);
+
+									if (!chrIsDead(chr) && chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
+										chr->hidden |= CHRHFLAG_DELETING;   /* would not die: as before */
+									}
+								}
 							} else {
 								chr->hidden |= CHRHFLAG_DELETING;
 							}
@@ -1277,6 +1444,10 @@ void chrInit(struct prop *prop, u8 *ailist)
 	prop->chr = chr;
 	chr->chrnum = chrsGetNextUnusedChrnum();
 	chrRegister(chr->chrnum, i);
+#ifndef PLATFORM_N64
+	chr->spawnreactionstart60 = g_Vars.lvframe60;
+	chr->spawnreactionplayed = false;
+#endif
 
 	chr->headnum = 0;
 	chr->bodynum = 0;
@@ -1413,6 +1584,8 @@ void chrInit(struct prop *prop, u8 *ailist)
 	chr->talktimer = TICKS(3600);
 	chr->cloakfadefrac = 0;
 	chr->cloakfadefinished = false;
+#ifndef PLATFORM_N64
+#endif
 	chr->inlift = false;
 	chr->targetlastseenp.x = 0;
 	chr->targetlastseenp.y = 0;
@@ -1470,6 +1643,12 @@ void chrInit(struct prop *prop, u8 *ailist)
 	chr->timeshooter = 0;
 	chr->noblood = false;
 	chr->rtracked = false;
+#ifndef PLATFORM_N64
+	chr->deathSerial = 0;
+#endif
+#ifdef PD_PHYSICS
+	chr->distantcorpseSerial = 0;
+#endif
 
 #if VERSION >= VERSION_NTSC_1_0
 	chr->goposhitcount = 0;
@@ -1540,6 +1719,10 @@ struct prop *chrAllocate(struct model *model, struct coord *pos, RoomNum *rooms,
 
 	if (prop) {
 		prop = chr0f020b14(prop, model, pos, rooms, faceangle, ailist);
+
+		if (ailist != NULL) {
+			prop->chr->hidden2 |= CHRH2FLAG_CHECKSPAWNFACING;
+		}
 
 		if (cheatIsActive(CHEAT_ENEMYSHIELDS)) {
 			chrSetShield(prop->chr, 8);
@@ -2218,6 +2401,29 @@ void chr0f022214(struct chrdata *chr, struct prop *prop, bool fulltick)
 	}
 }
 
+bool chrIsPosNearPlayer(const struct coord *pos)
+{
+	const f32 radius = 1500.0f;
+
+	for (s32 i = 0; i < PLAYERCOUNT(); i++) {
+		const struct player *player = g_Vars.players[i];
+		if (player && player->prop) {
+			const f32 dx = player->prop->pos.x - pos->x;
+			const f32 dy = player->prop->pos.y - pos->y;
+			const f32 dz = player->prop->pos.z - pos->z;
+			if (dx * dx + dy * dy + dz * dz <= radius * radius) return true;
+		}
+	}
+
+	return false;
+}
+
+bool chrIsNearOrVisibleToPlayer(const struct prop *prop)
+{
+	return (prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ONANYSCREENTHISTICK
+			| PROPFLAG_ONANYSCREENPREVTICK)) || chrIsPosNearPlayer(&prop->pos);
+}
+
 void chrCloak(struct chrdata *chr, bool value)
 {
 	if (!chrIsDead(chr)) {
@@ -2373,7 +2579,29 @@ void chrUpdateCloak(struct chrdata *chr)
 		prevplayernum = g_Vars.currentplayernum;
 		setCurrentPlayerNum(playermgrGetPlayerNumByProp(chr->prop));
 
-		if (g_Vars.currentplayer->devicesactive & DEVICE_CLOAKDEVICE) {
+#ifndef PLATFORM_N64
+		{
+			// Debug: Invisible Player keeps the cloak on, with no ammo use and
+			// no pause for shooting; turning it off lets the cloak go again
+			static bool debugcloakset = false;
+
+			if (g_ModRandomDebugCloak) {
+				g_Vars.currentplayer->devicesactive |= DEVICE_CLOAKDEVICE;
+				chr->cloakpause = 0;
+				debugcloakset = true;
+			} else if (debugcloakset) {
+				g_Vars.currentplayer->devicesactive &= ~DEVICE_CLOAKDEVICE;
+				debugcloakset = false;
+			}
+		}
+		modRandomDebugGivePlayerShotgun(); // debug: All Shotguns
+#endif
+
+		if ((g_Vars.currentplayer->devicesactive & DEVICE_CLOAKDEVICE)
+#ifndef PLATFORM_N64
+				&& !g_ModRandomDebugCloak
+#endif
+				) {
 			// Cloak is active - but may or may not be in effect due to recent shooting
 			s32 qty = bgunGetReservedAmmoCount(AMMOTYPE_CLOAK);
 
@@ -2409,6 +2637,13 @@ void chrUpdateCloak(struct chrdata *chr)
 		}
 
 		setCurrentPlayerNum(prevplayernum);
+	}
+
+	if ((chr->hidden2 & CHRH2FLAG_ASSASSINCLOAK) && !(chr->hidden & CHRHFLAG_CLOAKED)
+			&& chr->cloakpause == 0 && modRandomAssassinCloakActive() && !chrIsDead(chr)
+			&& chr->actiontype != ACT_DRUGGEDDROP && chr->actiontype != ACT_DRUGGEDKO
+			&& chr->actiontype != ACT_DRUGGEDCOMINGUP) {
+		chrCloak(chr, true);
 	}
 
 	// Update cloakfade
@@ -2608,6 +2843,37 @@ s32 chrTick(struct prop *prop)
 	}
 
 	if (fulltick) {
+#ifndef PLATFORM_N64
+		struct prop *bondprop = g_Vars.bond ? g_Vars.bond->prop : NULL;
+		if (modRandomIsOn() && prop->type == PROPTYPE_CHR && bondprop && bondprop->chr
+				&& chr->model && !chr->spawnreactionplayed && !chrIsDead(chr)
+				&& !(chr->chrflags & CHRCFLAG_HIDDEN)
+				&& g_Vars.lvframe60 - chr->spawnreactionstart60 < TICKS(120)
+				&& chrCompareTeams(chr, bondprop->chr, COMPARE_ENEMIES)
+				&& chrHasLosToProp(chr, bondprop) && chrTrySurprisedLookAround(chr)) {
+			chr->spawnreactionplayed = true;
+		}
+#endif
+		if ((chr->hidden2 & CHRH2FLAG_CHECKSPAWNFACING) && !(chr->chrflags & CHRCFLAG_HIDDEN)) {
+			chr->hidden2 &= ~CHRH2FLAG_CHECKSPAWNFACING;
+
+			struct chrdata *bond = g_Vars.bond && g_Vars.bond->prop ? g_Vars.bond->prop->chr : NULL;
+
+			if (prop->type == PROPTYPE_CHR && !chr->aibot && !chrIsDead(chr)
+					&& (race == RACE_HUMAN || race == RACE_SKEDAR)
+					&& chr->team != TEAM_NONCOMBAT && !(chr->team & TEAM_ALLY)
+					&& !(chr->chrflags & CHRCFLAG_CANFACEWALL) && !(chr->flags2 & CHRFLAG1_DOINGIDLEANIMATION)
+					&& (bond ? chrCompareTeams(chr, bond, COMPARE_ENEMIES) : (chr->team & TEAM_ENEMY) != 0)) {
+				struct coord probe = { prop->pos.x, chr->ground + 100.0f, prop->pos.z };
+				f32 angle = chrGetInverseTheta(chr);
+				f32 facing = chrSpawnFacingAwayFromWall(&probe, prop->rooms, angle);
+
+				if (facing != angle) {
+					chrSetLookAngle(chr, facing);
+				}
+			}
+		}
+
 #if VERSION >= VERSION_NTSC_1_0
 		if (chr->goposhitcount > 0 && (chr->hidden & CHRHFLAG_BLOCKINGDOOR) == 0) {
 			chr->goposhitcount--;
@@ -2907,9 +3173,9 @@ s32 chrTick(struct prop *prop)
 		}
 
 #ifdef PD_PHYSICS
-		if (var8009cdb0 + var8009cdac > 30 && !ragdollIsChrRagdolled(chr)) { // MOD: ragdoll physics
+		if (var8009cdb0 + var8009cdac > modChrOnscreenCap() && !ragdollIsChrRagdolled(chr)) { // MOD: ragdoll physics
 #else
-		if (var8009cdb0 + var8009cdac > 30) {
+		if (var8009cdb0 + var8009cdac > modChrOnscreenCap()) {
 #endif
 			needsupdate = false;
 		}
@@ -3763,6 +4029,18 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 			speb = scenarioHighlightProp(prop, colour);
 		}
 
+#ifndef PLATFORM_N64
+		if (!speb && modRandomIsOn() && modRandomTacticsTint(chr, colour)) {
+			speb = true; // the tactics debug tint
+		}
+		if (!speb && modRandomIsOn() && modRandomExplosiveTint(chr, colour)) {
+			speb = true; // Explosive Exit: a dead guard blinks red before it goes up
+		}
+		if (!speb && modSpawnEditChrTint(chr, colour)) {
+			speb = true; // the Spawn Customizer's Guaranteed Guard marker
+		}
+#endif
+
 		if (!speb) {
 			colour[3] = colour[3] - func0f068fc8(prop, true);
 
@@ -4006,6 +4284,19 @@ void chrEmitSparks(struct chrdata *chr, struct prop *prop, s32 hitpart, struct c
 		return;
 	}
 
+	// MOD: gore - a headshot sprays a bigger spurt: a guaranteed chunk of
+	// flesh and two extra bursts of blood on top of the usual ones.
+	if (hitpart == HITPART_HEAD) {
+		struct coord headpos;
+		headpos.x = coord2->x * 42.0f + coord->x;
+		headpos.y = coord2->y * 42.0f + coord->y;
+		headpos.z = coord2->z * 42.0f + coord->z;
+
+		sparksCreate(chrprop->rooms[0], chrprop, &headpos, coord2, 0, SPARKTYPE_FLESH_LARGE);
+		sparksCreate(chrprop->rooms[0], chrprop, coord, coord2, 0, SPARKTYPE_BLOOD);
+		sparksCreate(chrprop->rooms[0], chrprop, coord, coord2, 0, SPARKTYPE_BLOOD);
+	}
+
 	if ((rngRandom() & 4) == 0) {
 		struct coord coord3;
 		coord3.x = coord2->x * 42.0f + coord->x;
@@ -4019,6 +4310,54 @@ void chrEmitSparks(struct chrdata *chr, struct prop *prop, s32 hitpart, struct c
 	sparksCreate(chrprop->rooms[0], chrprop, coord, coord2, 0, SPARKTYPE_BLOOD);
 	sparksCreate(chrprop->rooms[0], chrprop, coord, coord2, 0, SPARKTYPE_FLESH);
 #endif
+}
+
+/**
+ * MOD: gore - the blood a shot leaves on a chr, for a shot fired by a chr.
+ *
+ * Stock, only the player's own shots (the hit handler below) leave blood
+ * splats on the level behind the victim, count towards the victim's wounded
+ * trail (chr->bulletstaken, splat.c) and bruise the body. A chr shooting a
+ * chr or a player made the spurt (chrEmitSparks()) and nothing else. This is
+ * the splat and the trail for those: the same call, with the shot's line
+ * from the gun through the hit position. (No bruise: that needs the model's
+ * bbox node the shot went through, which the chr's hit does not trace.)
+ */
+void chrShotBlood(struct chrdata *victim, struct prop *victimprop, struct coord *gunpos, struct coord *hitpos, struct coord *dir, struct chrdata *attacker)
+{
+	struct shotdata sd;
+	s32 race;
+	bool darker;
+	f32 len;
+
+	if (victim == NULL || victimprop == NULL || victimprop->chr != victim || victim->noblood
+			|| (attacker && chrIsUsingPaintball(attacker))
+			|| chrGetShield(victim) > 0) {
+		return;
+	}
+
+	race = CHRRACE(victim);
+
+	if (race == RACE_DRCAROLL || race == RACE_ROBOT || race == RACE_EYESPY) {
+		return;
+	}
+
+	len = sqrtf(dir->x * dir->x + dir->y * dir->y + dir->z * dir->z);
+
+	if (len < 0.0001f) {
+		return;
+	}
+
+	darker = victim->bodynum == BODY_MRBLONDE || race == RACE_SKEDAR;
+
+	memset(&sd, 0, sizeof(sd));
+	sd.gunpos3d = *gunpos;
+	sd.gunpos2d = *gunpos;
+	sd.gundir3d.x = sd.gundir2d.x = dir->x / len;
+	sd.gundir3d.y = sd.gundir2d.y = dir->y / len;
+	sd.gundir3d.z = sd.gundir2d.z = dir->z / len;
+
+	splatsCreateForChrHit(victimprop, &sd, hitpos, hitpos, darker, 0, attacker);
 }
 
 void chr0f0260c4(struct model *model, s32 hitpart, struct modelnode *node, struct coord *arg3)
@@ -4530,6 +4869,14 @@ void chrBruise(struct model *model, s32 hitpart, struct modelnode *node, struct 
 							s32 numverts = (u32)ptr[GFX_W0_BYTE(1)] / 16 + 1;
 							s32 i;
 
+#ifndef PLATFORM_N64
+							// MOD (2026-11-16): a model whose part has no vertex copy of its own (a
+							// bank head's, a mod model's) can carry a junk pointer here; bruising
+							// it read from address ~0 and crashed. No bruise on such a part.
+							if (rwdata->vertices == NULL || (uintptr_t)rwdata->vertices < 0x10000 || (intptr_t)rwdata->vertices < 0) {
+								posnode = NULL;
+							}
+#endif
 							if (posnode) {
 								for (i = 0; i < numverts; i++) {
 									s32 coordinate = vertices[i].x + (s32)spd4.f[0];
@@ -4947,6 +5294,7 @@ void chrTestHit(struct prop *prop, struct shotdata *shotdata, bool isshooting, b
 				if (chrGetTargetProp(chr) == g_Vars.currentplayer->prop) {
 					chr->chrflags |= CHRCFLAG_NEAR_MISS;
 				}
+				modRandomObjectiveReactToPlayer(chr, g_Vars.currentplayer->prop);
 
 				chr->numclosearghs++;
 			}
@@ -4987,7 +5335,7 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 	// MOD: ragdoll physics - shotgun pellets on a body (a whole shot on one
 	// limb can take it off)
 	if (hit->prop == prop || hit->prop->type != PROPTYPE_WEAPON) {
-		ragdollShotgunPelletHit(chr, hit->hitpart, &shotdata->gundir3d, &shotdata->gset);
+		ragdollShotgunPelletHit(chr, hit->hitpart, &shotdata->gundir3d, &shotdata->gset, hit->distance + shotdata->gunpos2d.z);
 	}
 
 	// MOD: ragdoll physics - shots move dead and dying bodies (and ragdolled knockouts)
@@ -5101,7 +5449,7 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 				}
 
 				// Drop gun
-				if (chr->aibot == NULL && (chr->flags & CHRFLAG0_CANLOSEGUN)) {
+				if (chr->aibot == NULL && chrCanBeDisarmed(chr) && (chr->flags & CHRFLAG0_CANLOSEGUN)) {
 					chr->gunprop = hit->prop;
 					objSetDropped(hit->prop, DROPTYPE_DEFAULT);
 					chr->hidden |= CHRHFLAG_DROPPINGITEM;
@@ -5162,7 +5510,11 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 						chrBruise(hit->model, hit->hitpart, hit->bboxnode, &sp5c);
 					}
 
-					splatsCreateForChrHit(prop, shotdata, &sp98, &hitpos, darker, 0, g_Vars.currentplayer->prop->chr);
+					if (hit->hitpart == HITPART_HEAD) {
+						splatsCreateForChrHeadshot(prop, shotdata, &sp98, &hitpos, darker, 0, g_Vars.currentplayer->prop->chr);
+					} else {
+						splatsCreateForChrHit(prop, shotdata, &sp98, &hitpos, darker, 0, g_Vars.currentplayer->prop->chr);
+					}
 				}
 #else
 				// NTSC beta wraps all the blood logic in this paintball check.
@@ -5184,7 +5536,11 @@ void chrHit(struct shotdata *shotdata, struct hit *hit)
 
 					chrBruise(hit->model, hit->hitpart, hit->bboxnode, &sp5c);
 
-					splatsCreateForChrHit(prop, shotdata, &sp98, &hitpos, darker, 0, g_Vars.currentplayer->prop->chr);
+					if (hit->hitpart == HITPART_HEAD) {
+						splatsCreateForChrHeadshot(prop, shotdata, &sp98, &hitpos, darker, 0, g_Vars.currentplayer->prop->chr);
+					} else {
+						splatsCreateForChrHit(prop, shotdata, &sp98, &hitpos, darker, 0, g_Vars.currentplayer->prop->chr);
+					}
 				}
 #endif
 			}
@@ -5276,6 +5632,12 @@ void chrsCheckForNoise(f32 noiseradius)
 			}
 		}
 	}
+}
+
+bool chrCanBeDisarmed(const struct chrdata *chr)
+{
+	return chr->headnum != HEAD_ELVIS && chr->headnum != HEAD_ELVIS_GOGS
+		&& !(chr->hidden2 & CHRH2FLAG_BLONDREVENGE);
 }
 
 struct chrdata *chrFindByLiteralId(s32 chrnum)

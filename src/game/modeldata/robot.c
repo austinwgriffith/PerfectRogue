@@ -61,7 +61,7 @@ struct skeleton g_SkelRobot = {
 	SKEL_ROBOT, ARRAYCOUNT(g_SkelRobotJoints), g_SkelRobotJoints,
 };
 
-struct headorbody g_HeadsAndBodies[] = {
+struct headorbody g_HeadsAndBodies[NUM_HEADSANDBODIES] = {
 	//           ismale
 	//           |                                  height
 	//           |                                  |

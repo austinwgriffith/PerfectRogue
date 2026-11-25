@@ -2479,7 +2479,7 @@ struct modelpartvisibility invpartvisibility_shotgun[] = {
 };
 
 struct guncmd invanim_shotgun_reload[] = {
-	gunscript_playanimation(ANIM_GUN_SHOTGUN_RELOAD, 0, 10000)
+	gunscript_playanimation(ANIM_GUN_SHOTGUN_RELOAD, 0, 20000) // 2x speed (was 10000)
 	gunscript_showpart(1, MODELPART_SHOTGUN_CART)
 	gunscript_playsound(67, SFX_01D8)
 	gunscript_waittime(74, 1)
@@ -2491,14 +2491,14 @@ struct guncmd invanim_shotgun_reload[] = {
 
 struct guncmd invanim_shotgun_singleshot[] = {
 	gunscript_playanimation(ANIM_GUN_SHOTGUN_SHOOT_SINGLE, 0, 10000)
-	gunscript_waittime(9, 2)
+	gunscript_waittime(4, 2) // was 9: frames of the fire animation before the shot
 	gunscript_playsound(34, SFX_RELOAD_04FB)
 	gunscript_end
 };
 
 struct guncmd invanim_shotgun_doubleshot[] = {
 	gunscript_playanimation(ANIM_GUN_SHOTGUN_SHOOT_DOUBLE, 0, 10000)
-	gunscript_waittime(9, 2)
+	gunscript_waittime(4, 2) // was 9: frames of the fire animation before the shot
 	gunscript_playsound(54, SFX_RELOAD_04FB)
 	gunscript_end
 };
@@ -2513,16 +2513,16 @@ struct weaponfunc_shootsingle invfunc_shotgun_single = {
 	0, // flags
 	&invrecoilsettings_default,
 	0, // recoverytime60
-	0.6, // damage
-	30, // spread
+	1.2, // damage (was 0.6: 2x per pellet)
+	7, // spread (was 30)
 	20, 28, 0, 0,
 	0, // recoildist
 	0, // recoilangle
 	0, // slidemax
-	4, // impactforce
+	16.6, // impactforce (was 4)
 	0, // duration60
 	SFX_FIRE_SHOTGUN, // shootsound
-	1, // penetration
+	5, // penetration (was 1: pellets pass through people like the magnum)
 };
 
 struct weaponfunc_shootsingle invfunc_shotgun_double = {
@@ -2535,16 +2535,16 @@ struct weaponfunc_shootsingle invfunc_shotgun_double = {
 	FUNCFLAG_BURST2,
 	&invrecoilsettings_default,
 	0, // recoverytime60
-	0.6, // damage
-	16, // spread
+	1.2, // damage (was 0.6: 2x per pellet)
+	4, // spread (was 16)
 	20, 28, 0, 0,
 	0, // recoildist
 	0, // recoilangle
 	0, // slidemax
-	4, // impactforce
+	16.6, // impactforce (was 4)
 	0, // duration60
 	SFX_FIRE_SHOTGUN, // shootsound
-	1, // penetration
+	5, // penetration (was 1: pellets pass through people like the magnum)
 };
 
 struct inventory_ammo invammo_shotgun = {
@@ -4271,7 +4271,7 @@ struct weaponfunc_shootsingle invfunc_cc13_shoot = {
 	&invrecoilsettings_default,
 	16, // recoverytime60
 	1, // damage
-	6, // spread
+	1, // spread
 	4, 8, 3, 0,
 	5, // recoildist
 	10, // recoilangle
@@ -5311,6 +5311,44 @@ struct weapon invitem_suicidepill = {
 	WEAPONFLAG_AICANUSE | WEAPONFLAG_UNDROPPABLE,
 };
 
+struct weaponfunc_special invfunc_targetlocator_use = {
+	INVENTORYFUNCTYPE_SPECIAL,
+	L_GUN_111, // name
+	0, // unused
+	-1, // no ammo
+	&invnoisesettings_silent,
+	NULL, // fire animation
+	FUNCFLAG_NOMUZZLEFLASH | FUNCFLAG_AUTOSWITCHUNSELECTABLE,
+	HANDATTACKTYPE_TARGETLOCATOR,
+	30, // recoverytime60
+	0, // soundnum (unused)
+};
+
+struct weapon invitem_targetlocator = {
+	FILE_PBINOCULARS, // hi model
+	FILE_PBINOCULARS, // lo model
+	NULL, // equip animation
+	NULL, // unequip animation
+	NULL, // pritosec animation
+	NULL, // sectopri animation
+	{ &invfunc_targetlocator_use, NULL }, // functions
+	NULL, // pri ammo
+	NULL, // sec ammo
+	&invaimsettings_default,
+	1, // muzzlez
+	0, // posx
+	-39.5, // posy
+	-55.5, // posz
+	1, // sway
+	NULL, // gunviscmds
+	NULL, // part visibility
+	L_GUN_111, // short name
+	L_GUN_111, // name
+	L_GUN_000, // manufacturer
+	L_GUN_111, // description
+	WEAPONFLAG_ONEHANDED | WEAPONFLAG_UNDROPPABLE,
+};
+
 struct weaponfunc_device invfunc_irscanner_primary = {
 	INVENTORYFUNCTYPE_DEVICE,
 	L_GUN_138, // name
@@ -6291,4 +6329,5 @@ struct weapon *g_Weapons[] = {
 	&invitem_hammer,
 	&invitem_hammer,
 	&invitem_suicidepill,
+	&invitem_targetlocator,
 };

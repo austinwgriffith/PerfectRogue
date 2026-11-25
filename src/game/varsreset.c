@@ -1,6 +1,7 @@
 #include <ultra64.h>
 #include "constants.h"
 #include "game/prop.h"
+#include "game/bg.h"
 #include "bss.h"
 #include "lib/memp.h"
 #include "lib/vars.h"
@@ -14,7 +15,14 @@ void varsReset(void)
 	s32 i;
 
 	g_Vars.props = mempAlloc(ALIGN64(g_Vars.maxprops * sizeof(struct prop)), MEMPOOL_STAGE);
-	g_Vars.onscreenprops = mempAlloc(ALIGN64(200 * sizeof(void *)), MEMPOOL_STAGE);
+
+	// MOD: bounds fix. Stock held 200 onscreen props with nothing checking it
+	// (propsSort, and the room list in bgRenderScene, ran past the end with a
+	// 201st). Every prop that exists gets a place instead, and a NULL after.
+	g_PropsOnscreenCap = g_Vars.maxprops > 200 ? g_Vars.maxprops : 200;
+	g_Vars.onscreenprops = mempAlloc(ALIGN64((g_PropsOnscreenCap + 1) * sizeof(void *)), MEMPOOL_STAGE);
+	g_BgRoomNumsByPropLen = g_PropsOnscreenCap + 1;
+	g_BgRoomNumsByProp = mempAlloc(ALIGN64(g_BgRoomNumsByPropLen * sizeof(RoomNum)), MEMPOOL_STAGE);
 
 	g_AutoAimScale = 1;
 

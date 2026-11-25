@@ -19,10 +19,12 @@ typedef struct {
 s32 videoInit(void);
 void videoStartFrame(void);
 void videoSubmitCommands(Gfx *cmds);
+void videoQueueOverlay(Gfx *cmds);
 void videoClearScreen(void);
 void videoEndFrame(void);
 
 void *videoGetWindowHandle(void);
+s32 videoIsWindowVisible(void);
 
 void videoUpdateNativeResolution(s32 w, s32 h);
 s32 videoGetNativeWidth(void);

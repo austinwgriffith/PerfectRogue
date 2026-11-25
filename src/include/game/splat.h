@@ -10,4 +10,8 @@ s32 splatsCreate(s32 qty, f32 arg1, struct prop *prop, struct shotdata *arg3, st
 void splatsTick(void);
 void splatResetChr(struct chrdata *chr);
 
+extern struct coord *g_SplatPuddleAt;
+void splatsCreateForChrHeadshot(struct prop *prop, struct shotdata *arg1, struct coord *arg2, struct coord *arg3, s32 arg4, s32 arg5, struct chrdata *arg6);
+void splatCreateTrail(struct prop *prop, struct chrdata *chr, struct coord *at, f32 size);
+s32 splatCreateTrailWall(struct prop *prop, struct chrdata *chr, struct coord *at, f32 size, f32 reach);
 #endif

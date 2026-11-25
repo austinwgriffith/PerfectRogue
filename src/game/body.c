@@ -1,5 +1,12 @@
+#include "game/modoptions.h"
+#include "game/modheads.h"
+#include "game/modrandom.h"
 #include <ultra64.h>
 #include "constants.h"
+#include "prcompat.h"
+#ifndef PLATFORM_N64
+#include "system.h"
+#endif
 #include "game/cheats.h"
 #include "game/chraction.h"
 #include "game/chr.h"
@@ -171,8 +178,15 @@ struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 	f32 animscale = g_HeadsAndBodies[bodynum].animscale;
 	struct modelnode *node = NULL;
 	u32 stack[2];
+#ifndef PLATFORM_N64
+	// GE Plus under the Japanese cartridge's rules keeps its named characters
+	// at their own size (chr_b.c: no 0.8 for them, BUGFIX_R1)
+	const bool dkmode = cheatIsActive(CHEAT_DKMODE) && !gexPlusDkModeSpares(bodynum, headnum);
+#else
+	const bool dkmode = cheatIsActive(CHEAT_DKMODE);
+#endif
 
-	if (cheatIsActive(CHEAT_DKMODE)) {
+	if (dkmode) {
 		scale *= 0.8f;
 	}
 
@@ -196,14 +210,51 @@ struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 					bodymodeldef->rwdatalen += headmodeldef->rwdatalen;
 				} else if (headnum > 0) {
 					if (headmodeldef == NULL) {
-						if (g_Vars.normmplayerisrunning && !IS4MB()) {
-							headmodeldef = modeldefLoadToNew(g_HeadsAndBodies[headnum].filenum);
+						// A head that is not the one this body was built with
+						// needs its own copy, and needs offsetting to sit on
+						// this body - which is what the multiplayer branch
+						// below does and the solo one does not.
+						//
+						// Solo shares one modeldef per head number and never
+						// offsets, because stock solo only ever pairs a head
+						// with its own body: HEAD_ELVIS comes on BODY_THEKING
+						// and nowhere else. Ghost Trials breaks that
+						// assumption twice over - the player wears whichever
+						// Combat Simulator character they picked, and the
+						// ghosts beside them wear whoever set those runs - so
+						// one head modeldef ends up on several different
+						// bodies at once.
+						//
+						// That is not a sharing problem, it is a tree problem:
+						// modelAttachHead() re-parents the head's root nodes
+						// to the headspot of whichever body attached last, and
+						// modelGetNodeRwData() walks up from a head node to
+						// find a headspot and takes its rwdatas. Every body
+						// but the last one to attach then resolves the head
+						// against a headspot belonging to a different
+						// definition, reads a meaningless index into its own
+						// rwdata, and writes through whatever is there. It
+						// showed as a write to 0x5008b7d - the same address
+						// every run, because what is being read as a pointer
+						// is model data out of the ROM.
+						//
+						// So a trial takes the multiplayer path. It costs a
+						// fresh head per body, which is the cost multiplayer
+						// has always paid for letting anyone wear anything.
+						bool ownhead = g_Vars.normmplayerisrunning;
+
+#ifndef PLATFORM_N64
+						ownhead = ownhead || modGhostTrialRulesApply() || modRandomHasReinforcements();
+#endif
+
+						if (ownhead && !IS4MB()) {
+							headmodeldef = modeldefLoadHead(headnum);
 							g_HeadsAndBodies[headnum].modeldef = headmodeldef;
 							g_FileInfo[g_HeadsAndBodies[headnum].filenum].loadedsize = 0;
 							bodyCalculateHeadOffset(headmodeldef, headnum, bodynum);
 						} else {
 							if (g_HeadsAndBodies[headnum].modeldef == NULL) {
-								g_HeadsAndBodies[headnum].modeldef = modeldefLoadToNew(g_HeadsAndBodies[headnum].filenum);
+								g_HeadsAndBodies[headnum].modeldef = modeldefLoadHead(headnum);
 							}
 
 							headmodeldef = g_HeadsAndBodies[headnum].modeldef;
@@ -226,7 +277,7 @@ struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 						scale *= 0.4f;
 					}
 
-					if (cheatIsActive(CHEAT_DKMODE)) {
+					if (dkmode) {
 						scale *= 1.25f;
 					}
 				} else {
@@ -256,28 +307,46 @@ struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 		modelSetScale(model, scale);
 		modelSetAnimScale(model, animscale);
 
-		if (headmodeldef && !g_HeadsAndBodies[bodynum].unk00_01) {
+		// A body with no headspot part takes no head. Stock never pairs a
+		// head with such a body, but a mod's table can (Mario Characters'
+		// Yoshi is a body with the head built in and the "has own head" bit
+		// clear), and the player path passes the head modeldef in regardless
+		// of whether the body has somewhere to put it. The rwdatalen for the
+		// head was only added above when the headspot was found.
+		if (headmodeldef && node && !g_HeadsAndBodies[bodynum].unk00_01) {
 			bodymodeldef->rwdatalen -= headmodeldef->rwdatalen;
 
-			modelmgrAttachHead(model, node, headmodeldef);
+			if (headmodeldef->rootnode && (headmodeldef->rootnode->type & 0xff) == MODELNODETYPE_CHRINFO) {
+				// A body model offered as a head. modelAttachHead() would
+				// re-parent its root under this body's headspot, and the next
+				// chr to wear that body as a body would then find a headspot
+				// above its root and read another model's rwdata through it.
+				// A mod's table index that the port's code still reads as a
+				// stock head number gets here.
+				sysLogPrintf(LOG_WARNING, "body %d: head %d is a body model (file %d %s); the chr goes headless",
+						bodynum, headnum, headnum >= 0 ? g_HeadsAndBodies[headnum].filenum : -1,
+						headnum >= 0 && romdataFileGetName(g_HeadsAndBodies[headnum].filenum) ? romdataFileGetName(g_HeadsAndBodies[headnum].filenum) : "?");
+			} else {
+				modelmgrAttachHead(model, node, headmodeldef);
 
-			if ((s16)*(s32 *)&headmodeldef->skel == SKEL_HEAD) {
-				struct modelnode *node2;
+				if ((s16)*(s32 *)&headmodeldef->skel == SKEL_HEAD) {
+					struct modelnode *node2;
 
-				if (!sunglasses) {
-					node2 = modelGetPart(headmodeldef, MODELPART_HEAD_SUNGLASSES);
+					if (!sunglasses) {
+						node2 = modelGetPart(headmodeldef, MODELPART_HEAD_SUNGLASSES);
+
+						if (node2) {
+							union modelrwdata *rwdata = modelGetNodeRwData(model, node2);
+							rwdata->toggle.visible = false;
+						}
+					}
+
+					node2 = modelGetPart(headmodeldef, MODELPART_HEAD_HUDPIECE);
 
 					if (node2) {
 						union modelrwdata *rwdata = modelGetNodeRwData(model, node2);
 						rwdata->toggle.visible = false;
 					}
-				}
-
-				node2 = modelGetPart(headmodeldef, MODELPART_HEAD_HUDPIECE);
-
-				if (node2) {
-					union modelrwdata *rwdata = modelGetNodeRwData(model, node2);
-					rwdata->toggle.visible = false;
 				}
 			}
 		}
@@ -318,6 +387,22 @@ s32 bodyChooseHead(s32 bodynum)
 {
 	s32 head;
 
+#ifndef PLATFORM_N64
+	// A converted GoldenEye mission's body whose own record named a head -
+	// Facility's Doctor Doak, Statue Park's Mishkin - rather than taking one of
+	// GoldenEye's pool, which the lists below now hold (gexPlusMissionHeads())
+	head = gexPlusRomOwnHead(bodynum);
+
+	if (head >= 0) {
+		return head;
+	}
+#endif
+
+	if (modRandomIsOn() && modRandomBodyTakesFemaleHead(bodynum)) {
+		// Perfect Random: every female guard draws from the whole pool
+		return modRandomFemaleHead(rngRandom() % modRandomFemaleHeadCount());
+	}
+
 	if (g_HeadsAndBodies[bodynum].ismale) {
 		head = g_ActiveMaleHeads[g_ActiveMaleHeadsIndex++];
 
@@ -338,11 +423,109 @@ s32 bodyChooseHead(s32 bodynum)
 }
 
 /**
- * Read a "packed" chr definition and create a runtime chr from it.
+ * The parts of a chr that come with its body rather than with its model: the
+ * robot's two fireslots, and the sizes the two special bodies stand at instead
+ * of a guard's.
  *
- * Chr definitions are stored in a packed format in each stage's setup file.
- * The packed format is used for space saving reasons.
+ * Out of bodyAllocateChr() because a chr is the same chr however it was
+ * spawned, and a stage's setup file is no longer the only thing that spawns
+ * one. A RACE_ROBOT chr is a chr propsRenderBeams() reads two beams out of
+ * every frame without asking whether they are there, and modalarm.c's
+ * reinforcements wear whatever body they are given - which, once a Randomizer
+ * run is choosing it per landing, includes BODY_CHICROB. A room the run filled
+ * with robots took the game down five seconds in (propobj.c, SIGSEGV).
+ *
+ * False when the stage pool had no room for the fireslots, which leaves them
+ * both NULL rather than half built: robotAttack() already declines to attack
+ * without them, and the render skips a robot that has none.
  */
+bool bodyInitSpecialChr(struct chrdata *chr, s32 bodynum)
+{
+	if (bodynum == BODY_DRCAROLL) {
+		chr->drcarollimage_left = 0;
+		chr->drcarollimage_right = 0;
+		chr->height = 185;
+		chr->radius = 30;
+	} else if (bodynum == BODY_CHICROB) {
+		chr->height = 200;
+		chr->radius = 42;
+
+		chr->unk348[0] = mempAlloc(sizeof(struct fireslotthing), MEMPOOL_STAGE);
+		chr->unk348[1] = mempAlloc(sizeof(struct fireslotthing), MEMPOOL_STAGE);
+
+		if (chr->unk348[0] && chr->unk348[1]) {
+			chr->unk348[0]->beam = mempAlloc(ALIGN16(sizeof(struct beam)), MEMPOOL_STAGE);
+			chr->unk348[1]->beam = mempAlloc(ALIGN16(sizeof(struct beam)), MEMPOOL_STAGE);
+		}
+
+		if (chr->unk348[0] == NULL || chr->unk348[1] == NULL
+				|| chr->unk348[0]->beam == NULL || chr->unk348[1]->beam == NULL) {
+			chr->unk348[0] = NULL;
+			chr->unk348[1] = NULL;
+
+			return false;
+		}
+
+		chr->unk348[0]->beam->age = -1;
+		chr->unk348[1]->beam->age = -1;
+	}
+
+	return true;
+}
+
+#ifndef PLATFORM_N64
+// How the setup's chr entries fared, for the log at the end of
+// setupCreateProps(): a mod's guards that never appear show up here.
+struct bodyspawnstats g_BodySpawnStats;
+
+struct bodyfemalelook {
+	s16 body;
+	s16 head;
+};
+
+// The same matched Joanna rigs used for Perfect Dark style guards elsewhere.
+static const struct bodyfemalelook g_BodyFemaleGuardLooks[] = {
+	{ BODY_DARK_COMBAT, HEAD_DARK_COMBAT },
+	{ BODY_DARK_TRENCH, HEAD_DARK_COMBAT },
+	{ BODY_DARK_FROCK, HEAD_DARK_FROCK },
+	{ BODY_DARK_RIPPED, HEAD_DARK_FROCK },
+	{ BODY_DARK_AF1, HEAD_DARK_COMBAT },
+	{ BODY_DARK_LEATHER, HEAD_DARK_COMBAT },
+	{ BODY_DARK_NEGOTIATOR, HEAD_DARK_COMBAT },
+	{ BODY_DARKWET, HEAD_DARKAQUA },
+	{ BODY_DARKAQUALUNG, HEAD_DARKAQUA },
+	{ BODY_DARKSNOW, HEAD_DARK_SNOW },
+	{ BODY_DARKLAB, HEAD_DARK_COMBAT },
+};
+#endif
+
+/** Return a compatible female guard body for an ordinary male human rig. */
+s32 bodyFemaleGuardLook(s32 key, s32 bodynum, s32 *headnum)
+{
+#ifndef PLATFORM_N64
+	s32 look;
+	if (modRandomIsOn()) return -1; // respect the selected guard model
+
+	if (bodynum < 0 || bodynum >= NUM_HEADSANDBODIES
+			|| g_HeadsAndBodies[bodynum].filenum <= 0
+			|| !g_HeadsAndBodies[bodynum].ismale
+			|| bodyGetRace(bodynum) != RACE_HUMAN
+			|| g_HeadsAndBodies[bodynum].unk00_01) {
+		return -1;
+	}
+
+	look = key % ARRAYCOUNT(g_BodyFemaleGuardLooks);
+	if (look < 0) {
+		look += ARRAYCOUNT(g_BodyFemaleGuardLooks);
+	}
+
+	*headnum = g_BodyFemaleGuardLooks[look].head;
+	return g_BodyFemaleGuardLooks[look].body;
+#else
+	return -1;
+#endif
+}
+
 void bodyAllocateChr(s32 stagenum, struct packedchr *packed, s32 cmdindex)
 {
 	struct pad pad;
@@ -355,17 +538,62 @@ void bodyAllocateChr(s32 stagenum, struct packedchr *packed, s32 cmdindex)
 	s32 headnum;
 	f32 angle;
 	s32 index;
+#ifndef PLATFORM_N64
+	s32 legal;
+#endif
+
+	if (modRandomIsOn() && packed->chrnum < 0) {
+		return;
+	}
+
+#ifndef PLATFORM_N64
+	u8 team = packed->team;
+	if (packed->chrnum >= 0 && team != TEAM_00 && team != TEAM_01
+			&& team != TEAM_ALLY && team != TEAM_NONCOMBAT
+			&& (team & (TEAM_01 | TEAM_ALLY)) == 0) {
+		s32 headnum = packed->headnum;
+		s32 body = bodyFemaleGuardLook((stagenum * 257 + cmdindex * 17 + packed->chrnum) & 0x7fffffff,
+				packed->bodynum, &headnum);
+
+		if (body >= 0) {
+			packed->bodynum = body;
+			packed->headnum = headnum;
+		}
+	}
+#endif
 
 	padUnpack(packed->padnum, PADFIELD_POS | PADFIELD_LOOK | PADFIELD_ROOM, &pad);
 
 	rooms[0] = pad.room;
 	rooms[1] = -1;
 
+#ifndef PLATFORM_N64
+	g_BodySpawnStats.entries++;
+#endif
+
+#ifndef PLATFORM_N64
+	// A converted GoldenEye mission's guard is made where GoldenEye makes it:
+	// at its pad where the pad passes GoldenEye's own test of a circle of 20
+	// there (getposstan(), gestan.c's geStanSpawnLegal()), and not at all
+	// where it fails. Perfect Dark's test left out guards GoldenEye makes
+	// (Facility 51, Frigate 26, Caverns 10 and 33, Aztec 9) and made one it
+	// does not (Caverns 41). -1 is no answer: Perfect Dark's own test.
+	legal = modloaderStageIsMission(stagenum) ? geStanSpawnLegal(&pad.pos, pad.room, 20) : -1;
+
+	if (legal == 0 || (legal < 0
+				&& cdTestVolume(&pad.pos, 20, rooms, CDTYPE_ALL, CHECKVERTICAL_YES, 200, -200) == CDRESULT_COLLISION
+				&& packed->chair == -1
+				&& (packed->spawnflags & SPAWNFLAG_IGNORECOLLISION) == 0)) {
+		g_BodySpawnStats.collision++;
+		return;
+	}
+#else
 	if (cdTestVolume(&pad.pos, 20, rooms, CDTYPE_ALL, CHECKVERTICAL_YES, 200, -200) == CDRESULT_COLLISION
 			&& packed->chair == -1
 			&& (packed->spawnflags & SPAWNFLAG_IGNORECOLLISION) == 0) {
 		return;
 	}
+#endif
 
 	if (packed->spawnflags & (SPAWNFLAG_ONLYONA | SPAWNFLAG_ONLYONSA | SPAWNFLAG_ONLYONPA)) {
 		if ((packed->spawnflags & (SPAWNFLAG_ONLYONA | SPAWNFLAG_ONLYONSA | SPAWNFLAG_ONLYONPA)) == 0) {
@@ -391,7 +619,9 @@ void bodyAllocateChr(s32 stagenum, struct packedchr *packed, s32 cmdindex)
 	}
 
 	if (!g_HeadsAndBodies[bodynum].unk00_01) {
-		if (packed->headnum >= 0) {
+		if (modRandomIsOn() && modHeadsUnpack(packed->headnum) != packed->headnum) {
+			headnum = modHeadsUnpack(packed->headnum);
+		} else if (packed->headnum >= 0) {
 			headnum = packed->headnum;
 		} else if (headnum == -55555) {
 			headnum = bodyChooseHead(bodynum);
@@ -413,6 +643,11 @@ void bodyAllocateChr(s32 stagenum, struct packedchr *packed, s32 cmdindex)
 	if (model != NULL) {
 		angle = atan2f(pad.look.x, pad.look.z);
 		prop = chrAllocate(model, &pad.pos, rooms, angle, ailistFindById(packed->ailistnum));
+#ifndef PLATFORM_N64
+		if (prop) {
+			g_BodySpawnStats.spawned++;
+		}
+#endif
 
 		if (prop != NULL) {
 			propActivate(prop);
@@ -424,27 +659,24 @@ void bodyAllocateChr(s32 stagenum, struct packedchr *packed, s32 cmdindex)
 			chr->visionrange = packed->viewdist;
 			chr->padpreset1 = packed->padpreset;
 			chr->chrpreset1 = packed->chrpreset;
+#ifndef PLATFORM_N64
+			// A body that carries its own head is never given one and headnum
+			// is still the -55555 this started with, which an s16 chr->headnum
+			// holds as 9981 - and chr->headnum is read as a row of
+			// g_HeadsAndBodies elsewhere (chraction.c's voice pick). Stock
+			// solo has no such body; GoldenEye's own Trevelyan, Ourumov,
+			// Natalya, Xenia and the pilot all are one, and so are the XBLA
+			// release's characters.
+			chr->headnum = headnum >= 0 && headnum < NUM_HEADSANDBODIES ? headnum : 0;
+#else
 			chr->headnum = headnum;
+#endif
 			chr->bodynum = bodynum;
 			chr->race = bodyGetRace(chr->bodynum);
 
 			chr->rtracked = false;
 
-			if (bodynum == BODY_DRCAROLL) {
-				chr->drcarollimage_left = 0;
-				chr->drcarollimage_right = 0;
-				chr->height = 185;
-				chr->radius = 30;
-			} else if (bodynum == BODY_CHICROB) {
-				chr->unk348[0] = mempAlloc(sizeof(struct fireslotthing), MEMPOOL_STAGE);
-				chr->unk348[1] = mempAlloc(sizeof(struct fireslotthing), MEMPOOL_STAGE);
-				chr->unk348[0]->beam = mempAlloc(ALIGN16(sizeof(struct beam)), MEMPOOL_STAGE);
-				chr->unk348[1]->beam = mempAlloc(ALIGN16(sizeof(struct beam)), MEMPOOL_STAGE);
-				chr->unk348[0]->beam->age = -1;
-				chr->unk348[1]->beam->age = -1;
-				chr->height = 200;
-				chr->radius = 42;
-			}
+			bodyInitSpecialChr(chr, bodynum);
 
 			if (packed->spawnflags & SPAWNFLAG_INVINCIBLE) {
 				chr->chrflags |= CHRCFLAG_INVINCIBLE;
@@ -478,6 +710,13 @@ void bodyAllocateChr(s32 stagenum, struct packedchr *packed, s32 cmdindex)
 				chr->hidden2 |= CHRH2FLAG_BLUESIGHT;
 			}
 
+#ifndef PLATFORM_N64
+			// GoldenEye's friends of Bond's (Natalya, 006, the scientists): blue in the sight
+			if (gexPlusRomRowIsAlly(bodynum)) {
+				chr->hidden2 |= CHRH2FLAG_BLUESIGHT;
+			}
+#endif
+
 			chr->flags = packed->flags;
 			chr->flags2 = packed->flags2;
 
@@ -498,7 +737,7 @@ void bodyAllocateChr(s32 stagenum, struct packedchr *packed, s32 cmdindex)
 
 			chr->voicebox = rngRandom() % 3;
 
-			if (!g_HeadsAndBodies[chr->bodynum].ismale) {
+			if (modRandomVoiceIsFemale(chr->bodynum, chr->headnum)) {
 				chr->voicebox = VOICEBOX_FEMALE;
 			}
 

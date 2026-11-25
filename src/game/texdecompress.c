@@ -1,7 +1,11 @@
 #include <ultra64.h>
+#include "game/modheads.h"
 #include "constants.h"
 #include "game/tex.h"
 #include "game/texdecompress.h"
+#ifndef PLATFORM_N64
+#include "mod.h"
+#endif
 #include "bss.h"
 #include "lib/crash.h"
 #include "lib/dma.h"
@@ -182,7 +186,7 @@ s32 texInflateZlib(u8 *src, u8 *dst, bool hasloddata, s32 numlods, struct texpoo
 		writetocache = true;
 
 		for (i = 0; i < g_TexCacheCount; i++) {
-			if (g_TexCacheItems[i].texturenum == pool->rightpos->texturenum) {
+			if (g_TexCacheItems[i].texturenum == TEX_CACHE_KEY(pool->rightpos)) {
 				writetocache = false;
 			}
 		}
@@ -251,7 +255,7 @@ s32 texInflateZlib(u8 *src, u8 *dst, bool hasloddata, s32 numlods, struct texpoo
 	}
 
 	if (writetocache) {
-		g_TexCacheItems[g_TexCacheCount].texturenum = pool->rightpos->texturenum;
+		g_TexCacheItems[g_TexCacheCount].texturenum = TEX_CACHE_KEY(pool->rightpos);
 
 		g_TexCacheCount++;
 
@@ -714,7 +718,7 @@ s32 texInflateNonZlib(u8 *src, u8 *dst, bool hasloddata, s32 numlods, struct tex
 		writetocache = true;
 
 		for (i = 0; i < g_TexCacheCount; i++) {
-			if (g_TexCacheItems[i].texturenum == pool->rightpos->texturenum) {
+			if (g_TexCacheItems[i].texturenum == TEX_CACHE_KEY(pool->rightpos)) {
 				writetocache = false;
 			}
 		}
@@ -828,7 +832,7 @@ s32 texInflateNonZlib(u8 *src, u8 *dst, bool hasloddata, s32 numlods, struct tex
 	}
 
 	if (writetocache) {
-		g_TexCacheItems[g_TexCacheCount].texturenum = pool->rightpos->texturenum;
+		g_TexCacheItems[g_TexCacheCount].texturenum = TEX_CACHE_KEY(pool->rightpos);
 
 		g_TexCacheCount++;
 
@@ -2111,11 +2115,20 @@ struct tex *texFindInPool(s32 texturenum, struct texpool *pool)
 		pool = &g_TexSharedPool;
 	}
 
+#ifdef PLATFORM_N64
+#define TEX_IS(tex) ((tex)->texturenum == texturenum)
+#else
+	// A Perfect Random bank head's texture N and the stock texture N are two
+	// textures in one pool (modheads.c)
+	const u32 srcmod = modTextureSource();
+#define TEX_IS(tex) ((tex)->texturenum == texturenum && (tex)->srcmod == srcmod)
+#endif
+
 	if (pool == &g_TexSharedPool) {
 		cur = pool->head;
 
 		while (cur) {
-			if (cur->texturenum == texturenum) {
+			if (TEX_IS(cur)) {
 				return cur;
 			}
 
@@ -2133,7 +2146,7 @@ struct tex *texFindInPool(s32 texturenum, struct texpool *pool)
 	cur = pool->rightpos;
 
 	while (cur < end) {
-		if (cur->texturenum == texturenum) {
+		if (TEX_IS(cur)) {
 			return cur;
 		}
 
@@ -2141,6 +2154,7 @@ struct tex *texFindInPool(s32 texturenum, struct texpool *pool)
 	}
 
 	return NULL;
+#undef TEX_IS
 }
 
 /**
@@ -2304,9 +2318,16 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 		tex = texFindInPool(g_TexNumToLoad, pool);
 
 		if (tex == NULL) {
+#ifndef PLATFORM_N64
+			// MOD: the level generator's own textures sit past the last (mod.c)
+			if (g_TexNumToLoad >= NUM_TEXTURES && !modTextureIsOwn(g_TexNumToLoad)) {
+				return;
+			}
+#else
 			if (g_TexNumToLoad >= NUM_TEXTURES) {
 				return;
 			}
+#endif
 
 			alignedcompbuffer = (u8 *) (((uintptr_t)compbuffer + 0xf) >> 4 << 4);
 
@@ -2316,21 +2337,23 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 			osWritebackDCacheAll();
 			osInvalDCache(alignedcompbuffer, DCACHE_SIZE);
 
-			thisoffset = g_Textures[g_TexNumToLoad].dataoffset;
-			nextoffset = g_Textures[g_TexNumToLoad + 1].dataoffset;
-
-			if (thisoffset == nextoffset) {
-				// The texture has no data
-				return;
-			}
+			thisoffset = g_TexNumToLoad < NUM_TEXTURES ? g_Textures[g_TexNumToLoad].dataoffset : 0;
+			nextoffset = g_TexNumToLoad < NUM_TEXTURES ? g_Textures[g_TexNumToLoad + 1].dataoffset : 0;
 
 #ifndef PLATFORM_N64
-			// try to load external replacement if present
+			// try to load external replacement if present. Asked before the
+			// empty-slot test: a GoldenEye texture can sit under a number whose
+			// Perfect Dark slot is empty (gelevels.h)
 			if (modTextureLoad(g_TexNumToLoad, alignedcompbuffer, 4096) > 0) {
 				compptr = alignedcompbuffer;
 			} else
 #endif
 			{
+				if (thisoffset == nextoffset) {
+					// The texture has no data
+					return;
+				}
+
 				// Copy the compressed texture to RAM
 				dmaExec(alignedcompbuffer,
 						(romptr_t) REF_SEG _texturesdataSegmentRomStart + (thisoffset & 0xfffffff8),
@@ -2392,6 +2415,9 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 			tex->texturenum = g_TexNumToLoad;
 			tex->data = pool->leftpos;
 			tex->unk0c_03 = false;
+#ifndef PLATFORM_N64
+			tex->srcmod = modTextureSource();
+#endif
 
 			// Extract the texture data to the allocation (pool->leftpos)
 			if (iszlib) {
@@ -2436,6 +2462,7 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 				texGetPoolFreeBytes(pool);
 			}
 		}
+
 
 		*updateword = osVirtualToPhysical(tex->data);
 	}

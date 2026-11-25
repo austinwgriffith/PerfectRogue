@@ -1,5 +1,8 @@
 #include <ultra64.h>
+#include "game/modoptions.h"
+#include "game/modalarm.h"
 #include "constants.h"
+#include "prcompat.h"
 #include "game/cheats.h"
 #include "game/inv.h"
 #include "game/bondgun.h"
@@ -234,7 +237,39 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 	s32 prevplayernum;
 	char text[256];
 
-	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_POPACAP) {
+	if (g_NetMode != NETMODE_NONE && netEvRecordDeath(aplayernum, vplayernum)) return; // netplay E6: the host's deaths, by mpchr slot
+
+#ifndef PLATFORM_N64
+	// A death in a Combat Simulator match whose victim is not in the match
+	// is one of the Guards Alerted! reinforcements (modalarm.c). Stock never
+	// records one - every victim it knows is a player or a simulant - and
+	// the attacker branch below would credit a kill for it, so the guards
+	// would decide the score. They are an obstacle, not points: nothing is
+	// recorded. Co-op keeps counting its mission guards as it always has.
+	if (g_Vars.normmplayerisrunning && vplayernum < 0) {
+		modAlarmRecordGuardKill(aplayernum);
+
+		if (aplayernum >= 0 && aplayernum < PLAYERCOUNT()) {
+			// "Guards killed: %d", the way a kill says "Kill count"
+			prevplayernum = g_Vars.currentplayernum;
+			setCurrentPlayerNum(aplayernum);
+			sprintf(text, "Guards killed: %d\n", modAlarmGetGuardKills(aplayernum));
+			hudmsgCreate(text, HUDMSGTYPE_DEFAULT);
+			setCurrentPlayerNum(prevplayernum);
+		}
+
+		return;
+	}
+
+	// A death with no attacker in the match is a guard's doing while the
+	// guards are about - it is what a guard's shot arrives as, since a guard
+	// has no slot to be named by.
+	if (g_Vars.normmplayerisrunning && aplayernum < 0 && vplayernum >= 0 && modIsGuardsAlertedOn()) {
+		modAlarmRecordGuardDeath(vplayernum);
+	}
+#endif
+
+	if (g_Vars.normmplayerisrunning && g_MpSetup.scenario == MPSCENARIO_POPACAP && !NET_CLIENT) { // netplay: a client's Pop a Cap state is the host's block
 		pacHandleDeath(aplayernum, vplayernum);
 	}
 

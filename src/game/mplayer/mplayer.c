@@ -1,4 +1,7 @@
 #include <ultra64.h>
+#include <string.h>
+#include "game/modoptions.h"
+#include "game/modrules.h"
 #include "constants.h"
 #include "game/camdraw.h"
 #include "game/title.h"
@@ -12,6 +15,7 @@
 #include "game/game_1531a0.h"
 #include "game/lv.h"
 #include "game/music.h"
+#include "game/options.h"
 #include "game/mplayer/setup.h"
 #include "game/mplayer/scenarios.h"
 #include "game/mpstats.h"
@@ -126,8 +130,8 @@ struct mpweapon g_MpWeapons[NUM_MPWEAPONS] = {
 
 #ifndef PLATFORM_N64
 
-#define PLAYER_EXT_CFG_DEFAULT { \
-	.fovy = 60.f, \
+#define PLAYER_EXT_CFG_DEFAULT_FOV(fov) { \
+	.fovy = (fov), \
 	.fovzoommult = 1.f, \
 	.fovzoom = true, \
 	.mouseaimmode = MOUSEAIM_CLASSIC, \
@@ -144,8 +148,10 @@ struct mpweapon g_MpWeapons[NUM_MPWEAPONS] = {
 	.usereloads = false, \
 }
 
+#define PLAYER_EXT_CFG_DEFAULT PLAYER_EXT_CFG_DEFAULT_FOV(60.f)
+
 struct extplayerconfig g_PlayerExtCfg[MAX_PLAYERS] = {
-	PLAYER_EXT_CFG_DEFAULT,
+	PLAYER_EXT_CFG_DEFAULT_FOV(97.f), // MOD: player 1 defaults to FOV 97
 	PLAYER_EXT_CFG_DEFAULT,
 	PLAYER_EXT_CFG_DEFAULT,
 	PLAYER_EXT_CFG_DEFAULT,
@@ -457,6 +463,12 @@ void mpPlayerSetDefaults(s32 playernum, bool autonames)
 		| OPTION_0100
 		| OPTION_ALWAYSSHOWTARGET
 		| OPTION_SHOWZOOMRANGE;
+
+#ifndef PLATFORM_N64
+	if (playernum == 0) {
+		optionsSetAutoAim(playernum, false);
+	}
+#endif
 
 	g_PlayerConfigsArray[playernum].handicap = 128;
 
@@ -2031,6 +2043,12 @@ u32 g_MpMaleHeads[] = {
 	HEAD_MOTO,
 #endif
 };
+
+// MOD: one of the stock male heads, for Perfect Random's generic guards.
+s32 mpGetMaleHeadId(u32 pick)
+{
+	return g_MpMaleHeads[pick % ARRAYCOUNT(g_MpMaleHeads)];
+}
 
 u32 g_MpFemaleHeads[] = {
 	HEAD_ALEX,

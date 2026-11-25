@@ -280,6 +280,8 @@
 #define AMSLOTFLAG_CURRENT 0x02 // black, eg. current equipped weapon
 #define AMSLOTFLAG_ACTIVE  0x08 // pulsates slightly, eg. cloak/xray when active
 #define AMSLOTFLAG_NOAMMO  0x10 // black BG, no border, orange text
+#define AMSLOTFLAG_YELLOW  0x20 // yellow weapon slot
+#define AMSLOTFLAG_BLUE    0x40 // blue boon gadget slot
 
 #define AMSLOTMODE_DEFAULT 0
 #define AMSLOTMODE_FOCUSED 1
@@ -607,7 +609,14 @@
 #define CHRH2FLAG_FIRESOUNDDONE     0x0020
 #define CHRH2FLAG_CONSIDERPROXIES   0x0040
 #define CHRH2FLAG_SPAWNED           0x0080
+#define CHRH2FLAG_ASSASSINCLOAK     0x0100
+#define CHRH2FLAG_WARZONE           0x0200
+#define CHRH2FLAG_BLONDREVENGE      0x0400
+#define CHRH2FLAG_SETTLECORPSE       0x0800
 #define CHRH2FLAG_HEADSHOTTED       0x1000
+#define CHRH2FLAG_MAIANINVADER      0x2000
+#define CHRH2FLAG_CHECKSPAWNFACING   0x4000
+#define CHRH2FLAG_PUNISHMENT         0x8000
 
 // chr->chrflags
 #define CHRCFLAG_FORCETOGROUND               0x00000001
@@ -795,6 +804,9 @@
 #define DEVICE_SUICIDEPILL 0x20
 #define DEVICE_CLOAKDEVICE 0x40
 #define DEVICE_CLOAKRCP120 0x80
+#define DEVICE_FRIENDPHONE 0x100 // Perfect Random boon items
+#define DEVICE_ARMCIVS     0x200
+#define DEVICE_MINDMELT    0x400
 
 #define DEVICESTATE_UNEQUIPPED -1
 #define DEVICESTATE_INACTIVE   0
@@ -1281,6 +1293,9 @@
 #define HANDATTACKTYPE_RCP120CLOAK     9
 #define HANDATTACKTYPE_MELEENOUNCLOAK  10
 #define HANDATTACKTYPE_UPLINK          12
+#define HANDATTACKTYPE_FRIENDPHONE     13 // Perfect Random: call in 1-3 partners
+#define HANDATTACKTYPE_ARMCIVS         14 // Perfect Random: the civilians take up arms
+#define HANDATTACKTYPE_TARGETLOCATOR   15 // Perfect Random: mark the current objective target
 
 #define HANDMODE_NONE   0
 #define HANDMODE_ATTACK 1
@@ -1431,6 +1446,8 @@
 #define HUDMSGFLAG_ALLOWDUPES  0x08
 #define HUDMSGFLAG_DELAY       0x10 // wait minimum 3 frames before showing
 #define HUDMSGFLAG_NOWRAP      0x20
+#define HUDMSGFLAG_PICKUP      0x40 // Perfect Random: the only default-type message still shown
+#define HUDMSGFLAG_OBJECTIVE   0x80 // objective instructions using a different HUD message style
 
 #define HUDMSGREASON_NOCONTROL 0x00000002
 
@@ -1453,6 +1470,7 @@
 #define HUDMSGTYPE_MPSCENARIO        9
 #define HUDMSGTYPE_TRAINING          10
 #define HUDMSGTYPE_CUTSCENESUBTITLE  11
+#define HUDMSGTYPE_EVENT             12 // Perfect Random: the objective banner, in blue
 
 #define HUDVALIGN_BOTTOM 0
 #define HUDVALIGN_TOP    1
@@ -1635,6 +1653,8 @@
 #define MENUDIALOGFLAG_1000              0x1000
 #ifndef PLATFORM_N64
 #define MENUDIALOGFLAG_LITERAL_TEXT      0x2000
+// Perfect Random: a scrollbar down the right edge while the dialog is taller than the screen
+#define MENUDIALOGFLAG_SCROLLBAR         0x8000
 #endif
 
 #define MENUDIALOGSTATE_PREOPEN    0
@@ -1679,6 +1699,8 @@
 #define MENUITEMFLAG_LITERAL_TEXT            0x08000000
 #define MENUITEMFLAG_SLIDER_WIDE             0x10000000
 #define MENUITEMFLAG_SLIDER_DEFERRED         0x20000000
+// Perfect Random: a dropdown as wide as its widest option, not its current one
+#define MENUITEMFLAG_DROPDOWN_ALLWIDTHS      0x40000000
 
 #define MENUITEMTYPE_LABEL       0x01
 #define MENUITEMTYPE_LIST        0x02
@@ -2260,7 +2282,16 @@
 #define MODEL_BUDDYBRIDGE           0x01b8
 #define MODEL_JPNLOGO               0x01b9
 #define MODEL_JPNPD                 0x01ba
+#ifndef PLATFORM_N64
+// MOD: GoldenEye levels. GoldenEye's prop models, its model number plus this,
+// filled at boot from mods/goldeneye/modconfig.txt's `models` block
+// (gelevels.c). A fixed number so the converted setup files can name them.
+#define MODEL_REMAKE_FIRST          0x200
+#define NUM_REMAKE_MODELS           512
+#define NUM_MODELS                  (MODEL_REMAKE_FIRST + NUM_REMAKE_MODELS)
+#else
 #define NUM_MODELS                  (VERSION == VERSION_JPN_FINAL ? 0x1bb : 0x1b9)
+#endif
 
 #define MODELNODETYPE_CHRINFO      0x01
 #define MODELNODETYPE_POSITION     0x02
@@ -4484,7 +4515,8 @@ enum weaponnum {
 	/*0x5a*/ WEAPON_WATCHLASER,
 	/*0x5b*/ WEAPON_MPSHIELD,
 	/*0x5c*/ WEAPON_DISABLED,
-	/*0x5d*/ WEAPON_SUICIDEPILL
+	/*0x5d*/ WEAPON_SUICIDEPILL,
+	/*0x5e*/ WEAPON_TARGETLOCATOR
 };
 
 #define WEAPON_MPLOCATION00 240
@@ -4744,6 +4776,8 @@ enum weaponnum {
 #define BUTTON_RADIAL         D_JPAD
 #define BUTTON_ALTMODE        L_TRIG
 
+#define BUTTON_QUICK_GRENADE  CONT_0040
+#define BUTTON_CYCLE_GRENADE  CONT_0080
 #define BUTTON_CROUCH_CYCLE   CONT_8000
 #define BUTTON_HALF_CROUCH    CONT_4000
 #define BUTTON_FULL_CROUCH    CONT_2000
@@ -4774,5 +4808,12 @@ enum weaponnum {
 #define MPSETUP_BLOCKSIZE 80
 
 #endif
+
+// Port: a stage that is a level to play (not the title, the menus or the
+// boot screens), for code that runs on a level only
+#ifndef STAGE_MAX_ID
+#define STAGE_MAX_ID 0xff
+#endif
+#define STAGE_IS_LEVEL(stagenum) ((stagenum) < STAGE_TITLE || ((stagenum) > STAGE_4MBMENU && (stagenum) <= STAGE_MAX_ID))
 
 #endif

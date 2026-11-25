@@ -1,0 +1,34 @@
+#ifndef _IN_GAME_MODALARM_H
+#define _IN_GAME_MODALARM_H
+
+#include <ultra64.h>
+#include "types.h"
+
+/**
+ * Guards Alerted!: the alarm as a permanent condition, and the guards it keeps
+ * sending. The setting itself lives in modoptions.h; this is the machinery.
+ */
+
+void modAlarmReset(void);
+s32 modAlarmSetReserve(void);
+s32 modAlarmGetReserve(void);
+s32 modAlarmGetAliveCount(void); // MOD: the stress test (modstress.c)
+void modAlarmTick(void);
+void modAlarmStartCivilianPunishment(void);
+bool modAlarmIsGuard(struct chrdata *chr);
+bool modAlarmIsPadGraph(void);
+bool modAlarmGuardOpensAnyDoor(struct chrdata *chr);
+void modAlarmRecordGuardKill(s32 aplayernum);
+void modAlarmRecordGuardDeath(s32 vplayernum);
+s32 modAlarmGetGuardKills(s32 mpindex);
+s32 modAlarmGetGuardDeaths(s32 mpindex);
+bool modAlarmHasMatchStats(void);
+struct chrdata *modAlarmFindGuardForBot(struct chrdata *botchr, f32 maxdist);
+void modAlarmBuildPadWaypoints(void);
+bool modAlarmNavPadsWalkable(s32 frompad, s32 topad);
+void modAlarmCutLiftlessClimbs(void);
+#ifndef PLATFORM_N64
+struct modeldef *modAlarmNetHead(s32 headnum, s32 bodynum);
+#endif
+
+#endif

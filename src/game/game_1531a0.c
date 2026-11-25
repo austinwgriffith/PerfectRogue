@@ -1371,6 +1371,49 @@ void textMapCodeUnitToChar(char **text, struct fontchar **arg1, struct fontchar 
 }
 #endif
 
+#ifndef PLATFORM_N64
+/**
+ * HD text: names the glyph about to be drawn so the renderer can swap in a
+ * texture pack's picture of it (port/src/hdtext.c). Emits nothing for a glyph
+ * that is not one of the font's own 94.
+ */
+static Gfx *textSetFontGlyph(Gfx *gdl, struct font *font, struct fontchar *curchar, s32 outline)
+{
+	s32 index;
+	s32 id;
+
+	if (!font || !curchar) {
+		return gdl;
+	}
+
+	index = curchar - font->chars;
+
+	if (index < 0 || index >= 94) {
+		return gdl;
+	}
+
+	if (font == g_FontHandelGothicSm) {
+		id = 0;
+	} else if (font == g_FontHandelGothicMd) {
+		id = 1;
+	} else if (font == g_FontHandelGothicXs) {
+		id = 2;
+	} else if (font == g_FontHandelGothicLg) {
+		id = 3;
+	} else if (font == g_FontNumeric) {
+		id = 4;
+	} else {
+		return gdl;
+	}
+
+	gDPSetFontGlyphEXT(gdl++, id, index, outline);
+
+	return gdl;
+}
+#else
+#define textSetFontGlyph(gdl, font, curchar, outline) (gdl)
+#endif
+
 Gfx *text0f154f38(Gfx *gdl, s32 *arg1, struct fontchar *curchar, struct fontchar *prevchar,
 		struct font *font, f32 widthscale, f32 heightscale, f32 x, f32 y)
 {
@@ -1411,6 +1454,8 @@ Gfx *text0f154f38(Gfx *gdl, s32 *arg1, struct fontchar *curchar, struct fontchar
 		}
 	}
 #endif
+
+	gdl = textSetFontGlyph(gdl, font, curchar, 0);
 
 	gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, curchar->pixeldata);
 	gDPLoadSync(gdl++);
@@ -1659,6 +1704,8 @@ Gfx *text0f15568c(Gfx *gdl, s32 *x, s32 *y, struct fontchar *curchar, struct fon
 				}
 			}
 
+			gdl = textSetFontGlyph(gdl, font, curchar, 0);
+
 			gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, curchar->pixeldata);
 			gDPLoadSync(gdl++);
 			gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((curchar->height * 8 + 17) >> 1) - 1, 2048);
@@ -1774,6 +1821,7 @@ Gfx *text0f15568c(Gfx *gdl, s32 *x, s32 *y, struct fontchar *curchar, struct fon
 				&& savedy + height >= curchar->baseline + sp90
 				&& *x >= savedx
 				&& curchar->baseline + sp90 + curchar->height >= savedy) {
+			gdl = textSetFontGlyph(gdl, font, curchar, 0);
 			gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, curchar->pixeldata);
 			gDPLoadSync(gdl++);
 			gDPLoadBlock(gdl++, G_TX_LOADTILE, 0, 0, ((curchar->height * 8 + 17) >> 1) - 1, 2048);
@@ -2163,6 +2211,8 @@ Gfx *textRenderChar(Gfx *gdl, s32 *x, s32 *y, struct fontchar *char1, struct fon
 			gdl = text0f1566cc(gdl, *x / g_ScaleX, *y + arg10);
 		}
 #endif
+
+		gdl = textSetFontGlyph(gdl, font, char1, 1);
 
 		gDPSetTextureImage(gdl++, G_IM_FMT_CI, G_IM_SIZ_16b, 1, char1->pixeldata);
 		gDPLoadSync(gdl++);

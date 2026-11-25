@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modrun.h"
 #include "constants.h"
 #include "constants.h"
 #include "game/cheats.h"
@@ -30,6 +31,14 @@ void invReset(void)
 void invInit(s32 numdoubles)
 {
 	g_Vars.currentplayer->equipmaxitems = numdoubles + 30;
+
+	// A Randomizer run carries every gun through every portal and the map
+	// it lands on adds its own kit on top, so the stock thirty slots fill
+	// and the guns that do not fit vanish - see modrun.h, MODRUN_MAXCARRY
+	if (modRunIsOn()) {
+		g_Vars.currentplayer->equipmaxitems += MODRUN_MAXCARRY;
+	}
+
 	g_Vars.currentplayer->equipment = mempAlloc(ALIGN16(g_Vars.currentplayer->equipmaxitems * sizeof(struct invitem)), MEMPOOL_STAGE);
 	invClear();
 }

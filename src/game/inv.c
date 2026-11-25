@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modoptions.h"
 #include "constants.h"
 #include "game/cheats.h"
 #include "game/bondgun.h"
@@ -407,6 +408,45 @@ bool invGiveDoubleWeapon(s32 weapon1, s32 weapon2)
 	}
 
 	return false;
+}
+
+/**
+ * Perfect Random: take every gun out of the inventory except the unarmed
+ * "weapon" and the numbers listed. Keys, briefcases and other props stay.
+ */
+void invRemoveWeaponsExcept(const s32 *keep, s32 numkeep)
+{
+	s32 i, j;
+
+	for (i = 0; i < g_Vars.currentplayer->equipmaxitems; i++) {
+		struct invitem *item = &g_Vars.currentplayer->equipment[i];
+		bool kept = false;
+
+		if (item->type == INVITEMTYPE_DUAL) {
+			// a pair is only kept when both guns are
+			kept = false;
+			for (j = 0; j < numkeep; j++) {
+				if (keep[j] == item->type_dual.weapon1) kept = true;
+			}
+			if (kept) {
+				kept = false;
+				for (j = 0; j < numkeep; j++) {
+					if (keep[j] == item->type_dual.weapon2) kept = true;
+				}
+			}
+		} else if (item->type == INVITEMTYPE_WEAP) {
+			kept = item->type_weap.weapon1 == WEAPON_UNARMED;
+			for (j = 0; j < numkeep; j++) {
+				if (keep[j] == item->type_weap.weapon1) kept = true;
+			}
+		} else {
+			continue;
+		}
+
+		if (!kept) {
+			invRemoveItem(item);
+		}
+	}
 }
 
 void invRemoveItemByNum(s32 weaponnum)

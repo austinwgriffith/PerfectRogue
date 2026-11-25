@@ -1361,6 +1361,10 @@ void modelApplyHeadRelations(struct model *model, struct modelnode *bodynode)
 			headnode->parent = bodynode;
 			headnode = headnode->next;
 		}
+	} else {
+		// The body tree is shared. Clear a head left by another instance
+		// before walking this instance's runtime data.
+		bodynode->child = NULL;
 	}
 }
 

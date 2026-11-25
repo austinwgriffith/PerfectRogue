@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modoptions.h"
 #include "constants.h"
 #include "game/tex.h"
 #include "game/camera.h"
@@ -8,6 +9,10 @@
 #include "lib/vi.h"
 #include "data.h"
 #include "types.h"
+#include "gelevels.h"
+#ifndef PLATFORM_N64
+#include "levelgenstage.h"
+#endif
 
 bool g_FogEnabled;
 bool g_EnvHasTransparency;
@@ -323,6 +328,38 @@ void envChooseAndApply(s32 stagenum, bool allowoverride)
 			}
 		}
 	}
+
+#ifndef PLATFORM_N64
+	// MOD: GoldenEye levels carry their own sky and fog (gelevels.c)
+	{
+		struct fogenvironment *gefog;
+		struct nofogenvironment *genofog;
+
+		if (gelevelsGetEnv(stagenum, &gefog, &genofog)) {
+			if (gefog) {
+				g_EnvOrigFogEnvironment = gefog;
+				g_EnvTransitionFrom = gefog;
+				g_EnvTransitionTo = gefog + 1;
+				envApplyFogEnvironment(gefog);
+			} else {
+				envApplyNoFogEnvironment(genofog);
+				g_EnvOrigFogEnvironment = NULL;
+			}
+			return;
+		}
+	}
+
+	// MOD: the generated level's sky, dealt from its seed (levelgenstage.c)
+	{
+		struct nofogenvironment *lgsky;
+
+		if (levelgenGetEnv(stagenum, &lgsky)) {
+			envApplyNoFogEnvironment(lgsky);
+			g_EnvOrigFogEnvironment = NULL;
+			return;
+		}
+	}
+#endif
 
 	// Try to find an env1
 	for (env1 = &g_FogEnvironments[0]; env1->stage != 0; env1++) {

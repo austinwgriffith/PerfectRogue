@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modrules.h"
 #include "constants.h"
 #include "game/game_006900.h"
 #include "game/bondgun.h"

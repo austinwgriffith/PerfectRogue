@@ -369,6 +369,7 @@ list(APPEND LIBS "${EXTRA_LIBRARIES}")
 file(GLOB_RECURSE SRC_PORT "${CMAKE_SOURCE_DIR}/port/*.c")
 file(GLOB_RECURSE SRC_PORT_CXX "${CMAKE_SOURCE_DIR}/port/*.cpp")
 
+# (src/game/modbounds.c and modstress.c are test files; editing this file makes cmake re-glob)
 file(GLOB_RECURSE SRC_GAME "${CMAKE_SOURCE_DIR}/src/game/*.c")
 
 file(GLOB SRC_LIB_MP3 "${CMAKE_SOURCE_DIR}/src/lib/mp3/*.c")
@@ -465,6 +466,22 @@ if(WIN32)
 endif()
 
 # Additional commands for specific platforms.
+
+# MOD: the shippable game folder. Every Windows build also copies the exe (and
+# the port's extra data) into it, so it always plays the latest build. It holds
+# no source. Set PD_SHIP_DIR to another folder, or to an empty string to skip.
+if(WIN32)
+  set(PD_SHIP_DIR "${CMAKE_SOURCE_DIR}/../PerfectRouge-Beta" CACHE PATH "Game folder each build is copied to (empty: none)")
+  if(PD_SHIP_DIR AND EXISTS "${PD_SHIP_DIR}")
+    add_custom_command(TARGET pd POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:pd>" "${PD_SHIP_DIR}/"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/port/data" "${PD_SHIP_DIR}/data"
+      COMMENT "Copying the exe and port/data to ${PD_SHIP_DIR}"
+    )
+  elseif(PD_SHIP_DIR)
+    message(STATUS "PD_SHIP_DIR ${PD_SHIP_DIR} does not exist: builds are not copied there")
+  endif()
+endif()
 
 if(NINTENDO_SWITCH)
   add_custom_command(TARGET pd POST_BUILD

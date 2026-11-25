@@ -1,5 +1,6 @@
 #include <ultra64.h>
 #include "game/chraicommands.h"
+#include "game/modrandom.h"
 #include "game/prop.h"
 #include "stagesetup.h"
 #include "data.h"
@@ -4019,6 +4020,96 @@ u8 func000e_see_then_attack[] = {
 	endlist
 };
 
+// Hold position through ambient noise and squad alerts. Player hits and near
+// misses can release this wait from the shot handlers.
+static u8 g_RogueObjectiveWaitAilist[] = {
+	set_shotlist(GAILIST_ROGUE_OBJECTIVE_WAIT)
+
+	beginloop(0x01)
+		if_chr_dead(CHR_SELF, /*goto*/ 0x04)
+		if_chr_knockedout(CHR_SELF, /*goto*/ 0x07)
+		if_chr_has_hiddenflag(CHR_SELF, CHRHFLAG_PSYCHOSISED, /*goto*/ 0x03)
+		chr_toggle_p1p2(CHR_SELF)
+		if_chr_death_animation_finished(CHR_P1P2, /*goto*/ 0x05)
+		set_target_chr(CHR_P1P2)
+		if_chr_has_hiddenflag(CHR_P1P2, CHRHFLAG_UNTARGETABLE, /*goto*/ 0x05)
+		if_target_outside_my_yvisang(/*goto*/ 0x05)
+		if_can_see_target(/*goto*/ 0x02)
+
+		label(0x05)
+		if_enemy_distance_lt_and_los(2540, /*goto*/ 0x06)
+		label(0x07)
+	endloop(0x01)
+
+	label(0x02)
+	set_alertness(255)
+	set_returnlist(CHR_SELF, GAILIST_UNALERTED)
+	set_ailist(CHR_SELF, GAILIST_WAKEUP)
+
+	label(0x06)
+	set_alertness(255)
+	set_returnlist(CHR_SELF, GAILIST_ROGUE_OBJECTIVE_WAIT)
+	set_ailist(CHR_SELF, GAILIST_INIT_COMBAT)
+
+	label(0x03)
+	set_returnlist(CHR_SELF, GAILIST_INIT_PSYCHOSIS)
+	set_ailist(CHR_SELF, GAILIST_INIT_PSYCHOSIS)
+
+	label(0x04)
+	set_shotlist(GAILIST_IDLE)
+	set_ailist(CHR_SELF, GAILIST_IDLE)
+	endlist
+};
+
+// Close the distance to the player who fired, even before visual contact.
+static u8 g_RogueObjectivePursueAilist[] = {
+	set_shotlist(GAILIST_ROGUE_OBJECTIVE_PURSUE)
+	set_target_chr(CHR_P1P2)
+	if_chr_death_animation_finished(CHR_TARGET, /*goto*/ 0x03)
+	if_chr_has_hiddenflag(CHR_TARGET, CHRHFLAG_UNTARGETABLE, /*goto*/ 0x03)
+	try_run_to_target(/*goto*/ 0x01)
+
+	beginloop(0x01)
+		if_chr_dead(CHR_SELF, /*goto*/ 0x06)
+		if_chr_knockedout(CHR_SELF, /*goto*/ 0x08)
+		if_chr_has_hiddenflag(CHR_SELF, CHRHFLAG_PSYCHOSISED, /*goto*/ 0x04)
+		set_target_chr(CHR_P1P2)
+		if_chr_death_animation_finished(CHR_TARGET, /*goto*/ 0x03)
+		if_chr_has_hiddenflag(CHR_TARGET, CHRHFLAG_UNTARGETABLE, /*goto*/ 0x03)
+		if_can_see_target(/*goto*/ 0x02)
+		if_enemy_distance_lt_and_los(2540, /*goto*/ 0x05)
+		if_chr_stopped(/*goto*/ 0x07)
+		label(0x08)
+	endloop(0x01)
+
+	label(0x07)
+	try_run_to_target(/*goto*/ 0x09)
+	label(0x09)
+	goto_first(0x01)
+
+	label(0x02)
+	set_returnlist(CHR_SELF, GAILIST_UNALERTED)
+	set_ailist(CHR_SELF, GAILIST_WAKEUP)
+
+	label(0x03)
+	stop_chr
+	set_returnlist(CHR_SELF, GAILIST_ROGUE_OBJECTIVE_WAIT)
+	set_ailist(CHR_SELF, GAILIST_ROGUE_OBJECTIVE_WAIT)
+
+	label(0x04)
+	set_returnlist(CHR_SELF, GAILIST_INIT_PSYCHOSIS)
+	set_ailist(CHR_SELF, GAILIST_INIT_PSYCHOSIS)
+
+	label(0x05)
+	set_returnlist(CHR_SELF, GAILIST_ROGUE_OBJECTIVE_PURSUE)
+	set_ailist(CHR_SELF, GAILIST_INIT_COMBAT)
+
+	label(0x06)
+	set_shotlist(GAILIST_IDLE)
+	set_ailist(CHR_SELF, GAILIST_IDLE)
+	endlist
+};
+
 /**
  * @ailist GAILIST_SHOW_OBJ_FAILED_MSG
  *
@@ -6151,6 +6242,8 @@ struct ailist g_GlobalAilists[] = {
 	{ func0029_aibot_init,                GAILIST_AIBOT_INIT             },
 	{ func002a_aibot_main,                GAILIST_AIBOT_MAIN             },
 	{ func002b_avoid,                     GAILIST_AVOID                  },
+	{ g_RogueObjectiveWaitAilist,         GAILIST_ROGUE_OBJECTIVE_WAIT   },
+	{ g_RogueObjectivePursueAilist,       GAILIST_ROGUE_OBJECTIVE_PURSUE },
 #ifdef PD_PHYSICS
 	{ g_RdExamineBodyAilist,              GAILIST_RD_EXAMINE_BODY        }, // MOD: ragdoll physics - guards look bodies over
 #endif

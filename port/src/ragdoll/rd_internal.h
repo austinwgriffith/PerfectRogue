@@ -269,8 +269,8 @@ struct rdplayergun {
 	struct weaponobj *objs[2];
 };
 
-// One shotgun shot (its pellets): it only takes a limb off if every pellet
-// hits the same limb of the same body
+// One shotgun shot (its pellets): it takes a limb off if two or more of its
+// pellets hit the same limb of the same body
 #define RD_VOLLEY_MAXPELLETS 12
 
 struct rdvolley {
@@ -279,6 +279,7 @@ struct rdvolley {
 	s32 hits;                     // pellets that hit a chr
 	bool pellethit;               // the current pellet already counted
 	struct chrdata *chr;
+	struct chrdata *hitchrs[RD_VOLLEY_MAXPELLETS];
 	s32 hitparts[RD_VOLLEY_MAXPELLETS];
 	struct coord dir;
 	struct gset gset;
@@ -409,6 +410,9 @@ struct ragdoll {
 	f32 localquat[RD_NUMPARTS][4];     // render-time local rotation (PD quaternion)
 	Mtxf rootrender;                   // root render matrix (world, with scale)
 	s32 age60;
+	f32 agefrac60;
+	f32 animfrac240;
+	s32 animticks240;
 	u32 serial;
 	f32 deathground;                   // chr->ground at the moment of death
 	s32 lastpush60;                    // g_Vars.lvframe60 of the last shot push
@@ -454,6 +458,11 @@ struct ragdoll {
 	struct coord renderpos[RD_NUMPARTS]; // render-time joint offsets (cut parts move freely)
 	s32 bleed60;
 	s32 splat60;
+	s32 trailcount;                    // MOD: gore - blood trail: splats left so far
+	bool trailset;                     // ... trailpos is where the last was left
+	f32 trailpos[3];
+	s32 headsplat60;                   // MOD: gore - a cut-off head's blood splats: time since the last
+	f32 headprev[3];                   // ... and where the head was then
 	s32 numdisccaps;                   // caps that had to fall back to a disc
 	f32 torso;                         // spine length at death (world units)
 	bool blending;                     // following the death animation
@@ -622,6 +631,7 @@ void ragdollSyncProps(f32 dt);
 void ragdollWakeOnMovedProps(void);
 void ragdollHandlePropImpacts(void);
 s32 ragdollBlocksDoor(struct doorobj *door);
+bool ragdollSeverForDoor(struct ragdoll *rd, s32 part);
 s32 ragdollDoorStuckOnBody(struct doorobj *door);
 void ragdollKillKnockedOut(struct ragdoll *rd, f32 impact);
 struct ragdoll *ragdollFindPlayerRagdoll(s32 playernum);
@@ -654,11 +664,20 @@ void ragdollReaperGrind(void);
 void ragdollTryDismemberShot(struct ragdoll *rd, s32 hitpart, struct coord *dir, struct gset *gset);
 void ragdollShotgunVolleyBegin(void);
 void ragdollShotgunPellet(void);
-void ragdollShotgunPelletHit(struct chrdata *chr, s32 hitpart, struct coord *dir, struct gset *gset);
+void ragdollShotgunPelletHit(struct chrdata *chr, s32 hitpart, struct coord *dir, struct gset *gset, f32 distance);
+void ragdollShotgunCutsTick(void);
+bool ragdollShotgunBlastInfo(struct chrdata *chr, s32 *pellets, f32 *distance);
+
+// A shotgun pellet that hits a body this close (world units, about 3 m) takes
+// off the limb it hit; a kill out to the throw range skips the death animation
+// and throws the body back as a ragdoll
+#define RD_SHOTGUN_CLOSERANGE 300.0f
+#define RD_SHOTGUN_THROWRANGE 550.0f
 void ragdollShotgunVolleyEnd(void);
 void ragdollTryDismemberBlast(struct ragdoll *rd, struct coord *centre, f32 radius);
 Gfx *ragdollRenderCaps(Gfx *gdl, struct chrdata *chr);
 void ragdollBleed(struct ragdoll *rd);
+void ragdollBloodTrail(struct ragdoll *rd);
 
 // ragdoll/rooms.c
 void ragdollUpdateBodyRooms(struct ragdoll *rd);

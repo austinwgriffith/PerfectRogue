@@ -1,4 +1,6 @@
 #include <ultra64.h>
+#include <string.h>
+#include "game/modoptions.h"
 #include "constants.h"
 #include "game/activemenu.h"
 #include "game/pdmode.h"

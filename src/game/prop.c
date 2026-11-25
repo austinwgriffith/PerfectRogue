@@ -1,5 +1,9 @@
 #include <ultra64.h>
+#include "game/modrules.h"
+#include "game/modrandom.h"
+#include "game/modoptions.h"
 #include "constants.h"
+#include "prcompat.h"
 #include "../lib/naudio/n_sndp.h"
 #include "game/bondmove.h"
 #include "game/bondwalk.h"
@@ -47,6 +51,7 @@
 #include "data.h"
 #include "types.h"
 #ifndef PLATFORM_N64
+#include <stdlib.h> // MOD: bounds fix - qsort
 #include "system.h" // MOD: room prop list limit - sysLogPrintf
 #endif
 
@@ -65,35 +70,56 @@ u32 var8009cdbc;
 f32 g_AutoAimScale = 1;
 
 /**
- * Populate g_Vars.onscreenprops. This is an array of prop pointers, filtered by
- * props that are on screen and sorted by distance descending (furthest first).
+ * MOD: bounds fix. The number of entries g_Vars.onscreenprops can take, not
+ * counting the NULL that ends it. Stock was a fixed 200 with nothing checking
+ * it, so a 201st visible prop wrote past the array (and past the depth buffer
+ * on the stack). varsReset() sizes it to the stage's prop count, so every prop
+ * that exists has a place; the check in propsCollectOnscreen() is the net.
  */
-void propsSort(void)
+s32 g_PropsOnscreenCap = 200;
+
+static s32 propsCompareDepth(const void *a, const void *b)
 {
-	s32 count = 0;
-	struct prop *prop = g_Vars.activeprops;
-	s32 swapindex;
-	f32 depth;
-	s32 i;
-	s32 j;
-	f32 depths[201];
+	const struct prop *pa = *(struct prop * const *)a;
+	const struct prop *pb = *(struct prop * const *)b;
 
-	// Populate onscreenprops with the list of props
-	while (prop != g_Vars.pausedprops) {
-		if ((prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) == (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) {
-			depths[count] = prop->z;
-			g_Vars.onscreenprops[count] = prop;
-			count++;
-		}
-
-		prop = prop->next;
+	if (pa->z > pb->z) {
+		return -1;
 	}
 
-	g_Vars.numonscreenprops = count;
-	g_Vars.onscreenprops[count] = NULL;
-	g_Vars.endonscreenprops = &g_Vars.onscreenprops[count];
+	if (pa->z < pb->z) {
+		return 1;
+	}
 
-	// Sort the onscreenprops list
+	// equal depths: any fixed order will do, but the same one every time
+	return (pa < pb) ? -1 : (pa > pb);
+}
+
+/**
+ * Sort a list of props by distance, furthest first.
+ *
+ * Up to 256 props this is stock's selection sort, so the order (ties
+ * included) is what it always was. Past that the O(n^2) sort would cost more
+ * than the frame can spare, so it is a quicksort instead.
+ */
+void propsSortList(struct prop **list, s32 count)
+{
+	f32 depths[256];
+	struct prop *prop;
+	f32 depth;
+	s32 swapindex;
+	s32 i;
+	s32 j;
+
+	if (count > 256) {
+		qsort(list, count, sizeof(list[0]), propsCompareDepth);
+		return;
+	}
+
+	for (i = 0; i < count; i++) {
+		depths[i] = list[i]->z;
+	}
+
 	for (i = 0; i < count; i++) {
 		swapindex = -1;
 		depth = -4294967296;
@@ -106,16 +132,121 @@ void propsSort(void)
 		}
 
 		if (swapindex >= 0) {
-			prop = g_Vars.onscreenprops[i];
+			prop = list[i];
 			depth = depths[i];
 
-			g_Vars.onscreenprops[i] = g_Vars.onscreenprops[swapindex];
+			list[i] = list[swapindex];
 			depths[i] = depths[swapindex];
 
-			g_Vars.onscreenprops[swapindex] = prop;
+			list[swapindex] = prop;
 			depths[swapindex] = depth;
 		}
 	}
+}
+
+/**
+ * Copy the props from head up to (not including) end that are enabled and on
+ * this screen into list, which takes cap props and a NULL after them. Returns
+ * how many. Props past cap are left out rather than written past the array.
+ */
+s32 propsCollectOnscreen(struct prop *head, struct prop *end, struct prop **list, s32 cap)
+{
+	struct prop *prop = head;
+	s32 count = 0;
+
+	while (prop != end) {
+		if ((prop->flags & (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) == (PROPFLAG_ONTHISSCREENTHISTICK | PROPFLAG_ENABLED)) {
+			if (count >= cap) {
+#ifndef PLATFORM_N64
+				static bool warned = false;
+
+				if (!warned) {
+					warned = true;
+					sysLogPrintf(LOG_WARNING, "PROPS: more than %d props on screen: the rest are not drawn", cap);
+				}
+#endif
+				break;
+			}
+
+			list[count] = prop;
+			count++;
+		}
+
+		prop = prop->next;
+	}
+
+	list[count] = NULL;
+
+	return count;
+}
+
+#ifndef PLATFORM_N64
+extern s32 g_RagdollMaxDrawnCorpses;
+static u64 g_CorpseDrawCutoff;
+
+static u64 propCorpseDrawRank(struct prop *prop)
+{
+	// Death order is unique. Use the prop slot to break ties for unmarked bodies.
+	return ((u64)prop->chr->deathSerial << 32) | (u32)(prop - g_Vars.props);
+}
+
+static void propsSelectCorpsesToDraw(struct prop **props, s32 count)
+{
+	u64 newest[256];
+	s32 limit = MIN(g_RagdollMaxDrawnCorpses, ARRAYCOUNT(newest));
+	s32 selected = 0;
+
+	g_CorpseDrawCutoff = 0;
+
+	if (limit <= 0 || count <= limit) {
+		return;
+	}
+
+	for (s32 i = 0; i < count; i++) {
+		struct prop *prop = props[i];
+
+		if (prop->type != PROPTYPE_CHR || !prop->chr || !prop->chr->model
+				|| (prop->chr->chrflags & CHRCFLAG_HIDDEN) || !chrIsDead(prop->chr)) {
+			continue;
+		}
+
+		u64 rank = propCorpseDrawRank(prop);
+		s32 j = MIN(selected, limit - 1);
+
+		if (selected == limit && rank <= newest[j]) {
+			continue;
+		}
+
+		while (j > 0 && rank > newest[j - 1]) {
+			newest[j] = newest[j - 1];
+			j--;
+		}
+
+		newest[j] = rank;
+		selected = MIN(selected + 1, limit);
+	}
+
+	if (selected == limit) {
+		g_CorpseDrawCutoff = newest[limit - 1];
+	}
+}
+#endif
+
+/**
+ * Populate g_Vars.onscreenprops. This is an array of prop pointers, filtered by
+ * props that are on screen and sorted by distance descending (furthest first).
+ */
+void propsSort(void)
+{
+	s32 count = propsCollectOnscreen(g_Vars.activeprops, g_Vars.pausedprops, g_Vars.onscreenprops, g_PropsOnscreenCap);
+
+	g_Vars.numonscreenprops = count;
+	g_Vars.endonscreenprops = &g_Vars.onscreenprops[count];
+
+#ifndef PLATFORM_N64
+	propsSelectCorpsesToDraw(g_Vars.onscreenprops, count);
+#endif
+	propsSortList(g_Vars.onscreenprops, count);
 }
 
 /**
@@ -364,18 +495,43 @@ Gfx *propRender(Gfx *gdl, struct prop *prop, bool xlupass)
 	case PROPTYPE_OBJ:
 	case PROPTYPE_DOOR:
 	case PROPTYPE_WEAPON:
+#ifndef PLATFORM_N64
+		g_ModPerfUs[22]++; // MOD: perf log - objects drawn
+#endif
 		gdl = objRender(prop, gdl, xlupass);
 		break;
 	case PROPTYPE_CHR:
+#ifndef PLATFORM_N64
+		{
+			// MOD: perf log - chr draws (live and dead) and the time spent building them
+			const u64 start = sysGetMicroseconds();
+			bool corpse = prop->chr && chrIsDead(prop->chr);
+
+			if (corpse && g_CorpseDrawCutoff && propCorpseDrawRank(prop) < g_CorpseDrawCutoff) {
+				break; // MOD: Max Drawn Corpses
+			}
+
+			g_ModPerfUs[corpse ? 21 : 20]++;
+			gdl = chrRender(prop, gdl, xlupass);
+			g_ModPerfUs[23] += sysGetMicroseconds() - start;
+		}
+#else
 		gdl = chrRender(prop, gdl, xlupass);
+#endif
 		break;
 	case PROPTYPE_PLAYER:
 		gdl = playerRender(prop, gdl, xlupass);
 		break;
 	case PROPTYPE_EXPLOSION:
+#ifndef PLATFORM_N64
+		g_ModPerfUs[24]++;
+#endif
 		gdl = explosionRender(prop, gdl, xlupass);
 		break;
 	case PROPTYPE_SMOKE:
+#ifndef PLATFORM_N64
+		g_ModPerfUs[24]++;
+#endif
 		gdl = smokeRender(prop, gdl, xlupass);
 		break;
 	}
@@ -702,6 +858,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 		// Note this is being appended to rooms
 		bgGetForceOnscreenRooms(roomsptr, 100);
 
+		bgSetShotPassGlass(isshooting);
 		for (i = 0; rooms[i] != -1; i++) {
 			if (bgTestHitInRoom(&shotdata.gunpos3d, &hitpos, rooms[i], &sp664)) {
 				sp664.pos.x *= 1;
@@ -726,6 +883,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 				}
 			}
 		}
+		bgSetShotPassGlass(false);
 	}
 
 	if (hitbg && shotdata.gset.weaponnum != WEAPON_FARSIGHT) {
@@ -797,8 +955,7 @@ struct prop *shotCalculateHits(s32 handnum, bool isshooting, struct coord *gunpo
 					hitpos.x = shotdata.hits[i].pos.x;
 					hitpos.y = shotdata.hits[i].pos.y;
 					hitpos.z = shotdata.hits[i].pos.z;
-				} else if (shotdata.hits[i].slowsbullet
-						|| (explosiveshells && (obj->type == OBJTYPE_GLASS || obj->type == OBJTYPE_TINTEDGLASS))) {
+				} else if (shotdata.hits[i].slowsbullet) {
 					s1++;
 
 					if (s1 >= shotdata.penetration) {
@@ -1599,6 +1756,15 @@ void handTickAttack(s32 handnum)
 		case HANDATTACKTYPE_UPLINK:
 			propFindForUplink();
 			break;
+		case HANDATTACKTYPE_FRIENDPHONE:
+			modRandomUseFriendPhone();
+			break;
+		case HANDATTACKTYPE_ARMCIVS:
+			modRandomUseArmCivs();
+			break;
+		case HANDATTACKTYPE_TARGETLOCATOR:
+			modRandomUseTargetLocator();
+			break;
 		case HANDATTACKTYPE_BOOST:
 			bgunApplyBoost();
 			break;
@@ -1773,6 +1939,13 @@ bool currentPlayerInteract(bool eyespy)
 
 		return false;
 	}
+
+#ifndef PLATFORM_N64
+	// MOD: a generated level's lift, ridden or called (propobj.c)
+	if (!eyespy && liftLevelgenInteract()) {
+		return false;
+	}
+#endif
 
 	return true;
 }

@@ -1,4 +1,6 @@
 #include <ultra64.h>
+#include "game/modcareer.h"
+#include "game/modoptions.h"
 #include "constants.h"
 #ifdef PD_PHYSICS
 #include "ragdoll.h" // MOD: ragdoll physics
@@ -92,6 +94,16 @@ struct explosiontype g_ExplosionTypes[] = {
 	/*24*/ { 80,  60,  4,   1.4,  500,  200,  400,  90,  2, 5, SMOKETYPE_LARGE,        0x809f, 4     },
 	/*25*/ { 640, 480, 32,  11.2, 1600, 1000, 1000, 180, 2, 5, SMOKETYPE_NONE,         0x80a4, 4     },
 };
+
+static bool g_ExplosiveExitCreating;
+
+bool explosionCreateExplosiveExit(struct coord *pos, RoomNum *rooms)
+{
+	g_ExplosiveExitCreating = true;
+	bool result = explosionCreateSimple(NULL, pos, rooms, EXPLOSIONTYPE_12, -1);
+	g_ExplosiveExitCreating = false;
+	return result;
+}
 
 bool explosionCreateSimple(struct prop *prop, struct coord *pos, RoomNum *rooms, s16 type, s32 playernum)
 {
@@ -359,6 +371,8 @@ bool explosionCreate(struct prop *sourceprop, struct coord *exppos, RoomNum *exp
 			exp->age = 0;
 			exp->makescorch = makescorch;
 			exp->owner = playernum;
+			exp->grenadeid = modCareerGrenadeTag();
+			exp->explosiveexit = g_ExplosiveExitCreating;
 
 			if (type != EXPLOSIONTYPE_BULLETHOLE && type != EXPLOSIONTYPE_PHOENIX) {
 				propSetDangerous(expprop);
@@ -1041,7 +1055,12 @@ void explosionInflictDamage(struct prop *expprop)
 						ownerprop = g_Vars.anti->prop;
 					}
 
+					if (exp->explosiveexit && prop->type == PROPTYPE_PLAYER) {
+						minfrac *= 0.5f;
+					}
+					modCareerGrenadeSource(exp->grenadeid);
 					chrDamageByExplosion(chr, minfrac, &spa0, ownerprop, &expprop->pos);
+					modCareerGrenadeSource(0);
 #ifdef PD_PHYSICS
 
 					// MOD: ragdoll physics - the initial blast throws bodies (including ones it just killed)

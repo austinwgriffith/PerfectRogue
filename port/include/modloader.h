@@ -1,0 +1,111 @@
+#ifndef _IN_PORT_MODLOADER_H
+#define _IN_PORT_MODLOADER_H
+
+#include <PR/ultratypes.h>
+
+// GoldenEye's twenty solo missions, as its own mission folder orders them
+// GoldenEye's twenty, and Cuba, its credits (gecredits.h)
+#define MODLOADER_MAX_MISSIONS 21
+
+void modloaderInit(void);
+// Register mounted dir i's maps alone (a dir mounted after boot: a net match's, netcontent.c); the maps registered
+s32 modloaderAddDir(s32 i);
+s32 modloaderAddDirMap(s32 i, const char *map); // one map of a mounted dir, a number reclaimed if none is free; -1
+void modloaderGetStats(s32 *registered, s32 *found, s32 *mods);
+const char *modloaderGetStageModDir(s32 stagenum);
+// The same directory as an index into the mounted list, or -1. What a texture
+// loaded for that stage is registered under, so its own pack can be found
+// again at the draw - see texpackTextureArt().
+s32 modloaderGetStageModDirIndex(s32 stagenum);
+// The stage's own mod when its door models are its own files (modloader.c)
+const char *modloaderGetStageOwnModelsDir(s32 stagenum);
+// A placed object's scale when its file is the map's own mod's (modloader.c)
+s32 modloaderGetStageModelScale(s32 stagenum, s32 modelnum, s32 fileid, s32 scale);
+f32 modloaderRemakeModelScale(s32 modelnum, s32 scale);
+const char *modloaderGetStageAllocation(s32 stagenum);
+// A Stage Loader map's own name, as its mod calls it, or NULL for a stock stage.
+const char *modloaderGetStageMapName(s32 stagenum);
+// the GoldenEye image an arena's map line names as its picture (`picture`), or 0
+s32 modloaderGetStagePicture(s32 stagenum);
+struct fogenvironment;
+
+// Before a stage's setup loads: the remake's model states, from the stage's
+// mod's `models` block (empty for any other stage).
+void modloaderApplyStageModels(s32 stagenum);
+
+// GE Plus, the GoldenEye remake's Combat Simulator: on while its arena list
+// is the remake's arenas only.
+extern s32 g_GexPlusMode;
+s32 modloaderStageIsRemake(s32 stagenum);
+// a remake arena of the GoldenEye ROM's conversion itself (not a ROM hack's)
+s32 modloaderStageIsGexPlus(s32 stagenum);
+// whether that arena or mission is the GoldenEye level GoldenEye keys `key`
+// ("ark" = Facility): its file is bg_gx<key>.seg (geconvert.c), arena and
+// mission alike; never a ROM hack's level, which gets keys of its own
+s32 modloaderStageIsGeLevel(s32 stagenum, const char *key);
+
+/**
+ * GE Plus's Combat Simulator (g_GexPlusMode) for a GoldenEye ROM hack's arenas
+ * in place of GoldenEye's: the hack's name (gexPlusRomGetVariant(), the folder
+ * its conversion is in), or NULL for GoldenEye's own. The arena list and the
+ * random arena take the stages modloaderStageInGexPlusList() answers for.
+ */
+extern const char *g_GexPlusVariant;
+s32 modloaderStageInGexPlusList(s32 stagenum);
+// the GoldenEye conversion's mounted dir (GEXPLUSROM_DIR), and whether a dir index is it
+s32 modloaderGexPlusDirIndex(void);
+s32 modloaderGexPlusVariantDirIndex(void); // the chosen ROM hack's (g_GexPlusVariant), or -1
+s32 modloaderDirIndexIsGexPlus(s32 moddir);
+s32 modloaderDirIndexIsConversion(s32 moddir);
+// One of the remake's models (MODEL_REMAKE_FIRST + slot) on a stage of
+// Perfect Dark's, from the mod that brings it, until the next stage; -1 where
+// no mod has it or the stage is one of the remake's own
+s32 modloaderLendRemakeModel(s32 slot);
+// a ROM hack's own (mod dir `modindex`) where it has the slot, GoldenEye's otherwise
+s32 modloaderLendRemakeModelFrom(s32 slot, s32 modindex);
+// mod dir `modindex`'s own model file for a remake slot, registered (0 none)
+s32 modloaderRemakeModelFileOf(s32 modindex, s32 slot, u16 *scale);
+
+// The GoldenEye remake's solo missions, from a mod's `missions` block: the
+// stage mission n registered as (0 for none), and how many there are.
+s32 modloaderMissionStage(s32 mission);
+// the same for the set a conversion name picks (NULL GoldenEye's own), whatever mode is chosen (netcoop.c)
+s32 modloaderMissionStageOf(const char *variant, s32 mission);
+s32 modloaderNumMissionsOf(const char *variant);
+s32 modloaderNumMissions(void);
+s32 modloaderStageIsMission(s32 stagenum);
+// and the other way round: the mission a stage is, or -1
+s32 modloaderStageMission(s32 stagenum);
+
+// A Stage Loader map's setup with a borrowed mod's objects, and the solo setup
+// of the mod's stage they come from; 0 for none.
+s32 modloaderGetStageProps(s32 stagenum, const char **from);
+
+// A Stage Loader map's fog table row from its mod's maps block, or NULL.
+struct fogenvironment *modloaderGetStageFog(s32 stagenum);
+// a mission's second sky, which its gas and sky switch fade to; NULL where it has none
+struct fogenvironment *modloaderGetStageFogAlt(s32 stagenum);
+struct fogenvironment *modloaderGetStageFogCinema(s32 stagenum);
+struct nofogenvironment *modloaderGetStageNoFog(s32 stagenum);
+
+// A Stage Loader map's music from its mod's maps or missions block - main
+// theme, background, X theme as the mod's own sequence numbers, -1 for none -
+// and false when its line gives none.
+s32 modloaderGetStageMusic(s32 stagenum, s32 *tracks);
+
+// GoldenEye's later cartridges (JP/PAL), from the converter's `revsetup`,
+// `revmpsetup` and `revportals` (geconvert.c's revisionSetup()): the setup file
+// the stage loads for `filenum` as they have it, `filenum` itself where they
+// did not change it; and their portal thickness codes, the count with each
+// portal's number and code. The caller asks gexFrontGetRevisionFixes() first.
+s32 modloaderGetStageRevisionSetup(s32 stagenum, s32 filenum);
+
+/**
+ * The Community Edition's copy of one of a converted stage's files (its line's
+ * `ce`), or filenum when it has none. The caller asks only while the HD look
+ * and the Community Edition are on (geRoomCeData()).
+ */
+s32 modloaderGetStageCeFile(s32 stagenum, s32 filenum);
+s32 modloaderGetStageRevisionPortals(s32 stagenum, const u16 **portals, const u8 **codes);
+
+#endif

@@ -1,4 +1,6 @@
 #include <ultra64.h>
+#include <string.h>
+#include "game/modrules.h"
 #include "constants.h"
 #include "game/dlights.h"
 #include "game/game_006900.h"

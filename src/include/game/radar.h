@@ -10,4 +10,5 @@ Gfx *radarDrawDot(Gfx *gdl, struct prop *prop, struct coord *dist, u32 colour1, 
 Gfx *radarRender(Gfx *gdl);
 Gfx *radarRenderRTrackedProps(Gfx *gdl);
 
+Gfx *radarRenderWorldObjectiveMarkers(Gfx *gdl);
 #endif

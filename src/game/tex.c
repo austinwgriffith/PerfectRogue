@@ -300,7 +300,7 @@ s32 texGetWidthAtLod(struct tex *tex, s32 lod)
 
 	if (tex->hasloddata) {
 		for (i = 0; i < g_TexCacheCount; i++) {
-			if (tex->texturenum == g_TexCacheItems[i].texturenum) {
+			if (TEX_CACHE_KEY(tex) == g_TexCacheItems[i].texturenum) {
 				return g_TexCacheItems[i].widths[lod - 1];
 			}
 		}
@@ -326,7 +326,7 @@ s32 texGetHeightAtLod(struct tex *tex, s32 lod)
 
 	if (tex->hasloddata) {
 		for (i = 0; i < g_TexCacheCount; i++) {
-			if (tex->texturenum == g_TexCacheItems[i].texturenum) {
+			if (TEX_CACHE_KEY(tex) == g_TexCacheItems[i].texturenum) {
 				return g_TexCacheItems[i].heights[lod - 1];
 			}
 		}
@@ -418,7 +418,10 @@ s32 texModeToGbiMode(s32 txmode)
 
 Gfx *texWriteTileFromDefinition(Gfx *gdl, struct tex *tex, s32 offset, s32 shifts, s32 shiftt, s32 min)
 {
-	struct texture *s0 = &g_Textures[tex->texturenum];
+	// MOD: a texture past the game's last (the level generator's own) has no
+	// entry in the table: a blank one
+	static struct texture blank;
+	struct texture *s0 = tex->texturenum < NUM_TEXTURES ? &g_Textures[tex->texturenum] : &blank;
 	s32 masks;
 	s32 maskt;
 	s32 line;

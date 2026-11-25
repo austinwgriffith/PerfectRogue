@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include <string.h>
 #include "constants.h"
 #ifdef PD_PHYSICS
 #include "game/cheats.h" // MOD: Deadly Punch
@@ -28,6 +29,21 @@
 #include "lib/str.h"
 #include "data.h"
 #include "types.h"
+#include "game/modoptions.h"
+#include "game/modcareer.h"
+#include "game/modrules.h"
+#include "game/modrandom.h"
+
+/**
+ * In a Gauntlet the grenade and the mines are thrown with the quick throw
+ * (and Mine Layer would fill the menu with them), so the weapon menu leaves
+ * them out.
+ */
+static bool amHiddenInGauntlet(s32 weaponnum)
+{
+	return modCareerIsOn() && (weaponnum == WEAPON_GRENADE || weaponnum == WEAPON_TIMEDMINE
+			|| weaponnum == WEAPON_PROXIMITYMINE || weaponnum == WEAPON_REMOTEMINE);
+}
 
 struct activemenu g_AmMenus[MAX_PLAYERS];
 struct fontchar *g_AmFont1;
@@ -313,7 +329,12 @@ void amApply(s32 slot)
 			weaponnum = invGetWeaponNumByIndex(invindex);
 			pass = true;
 
-			if (weaponnum) {
+			if (weaponnum == WEAPON_TARGETLOCATOR) {
+				modRandomUseTargetLocator();
+				pass = false;
+			}
+
+			if (pass && weaponnum) {
 				state = currentPlayerGetDeviceState(weaponnum);
 
 				if (state != DEVICESTATE_UNEQUIPPED) {
@@ -452,6 +473,14 @@ void amGetSlotDetails(s32 slot, u32 *flags, char *label)
 
 		if (!bgunHasAmmoForWeapon(weaponnum)) {
 			*flags |= AMSLOTFLAG_NOAMMO;
+		}
+		if (weaponnum == WEAPON_CROSSBOW || weaponnum == WEAPON_TRANQUILIZER
+				|| weaponnum == WEAPON_NBOMB || weaponnum == WEAPON_PSYCHOSISGUN) {
+			*flags |= AMSLOTFLAG_YELLOW;
+		} else if (modCareerIsOn() && (weaponnum == WEAPON_TESTER
+				|| weaponnum == WEAPON_PRESIDENTSCANNER || weaponnum == WEAPON_DISGUISE40
+				|| weaponnum == WEAPON_DISGUISE41 || weaponnum == WEAPON_CLOAKINGDEVICE)) {
+			*flags |= AMSLOTFLAG_BLUE;
 		}
 		break;
 	case 1: // Function screen
@@ -670,10 +699,12 @@ void amAssignWeaponSlots(void)
 	for (i = 0; i < numitems; i++) {
 		weaponnum = invGetWeaponNumByIndex(i);
 
-		if ((weaponnum >= WEAPON_UNARMED && weaponnum <= WEAPON_DISGUISE41)
+		if (((weaponnum >= WEAPON_UNARMED && weaponnum <= WEAPON_DISGUISE41)
+				|| weaponnum == WEAPON_TESTER || weaponnum == WEAPON_PRESIDENTSCANNER
+				|| weaponnum == WEAPON_COMMSRIDER
 				|| weaponnum == WEAPON_SUICIDEPILL
 				|| weaponnum == WEAPON_BACKUPDISK
-				|| weaponnum == WEAPON_SUITCASE) {
+				|| weaponnum == WEAPON_SUITCASE) && !amHiddenInGauntlet(weaponnum)) {
 			for (j = 0; j < ARRAYCOUNT(g_AmMenus[g_AmIndex].favourites); j++) {
 				if (g_AmMenus[g_AmIndex].favourites[j] == weaponnum) {
 					if (g_AmMenus[g_AmIndex].invindexes[j] == 0xff) {
@@ -701,9 +732,11 @@ void amAssignWeaponSlots(void)
 		if (!isfavourited) {
 			weaponnum = invGetWeaponNumByIndex(i);
 
-			if ((weaponnum >= WEAPON_UNARMED && weaponnum <= WEAPON_DISGUISE41)
+			if (((weaponnum >= WEAPON_UNARMED && weaponnum <= WEAPON_DISGUISE41)
+					|| weaponnum == WEAPON_TESTER || weaponnum == WEAPON_PRESIDENTSCANNER
+					|| weaponnum == WEAPON_COMMSRIDER
 					|| weaponnum == WEAPON_SUICIDEPILL
-					|| weaponnum == WEAPON_SUITCASE) {
+					|| weaponnum == WEAPON_SUITCASE) && !amHiddenInGauntlet(weaponnum)) {
 				s32 useindex = -1;
 				s32 j;
 
@@ -1168,6 +1201,11 @@ Gfx *amRenderSlot(Gfx *gdl, char *text, s16 x, s16 y, s32 mode, s32 flags)
 	if (g_Vars.currentplayer->activemenumode == AMMODE_EDIT) {
 		colour = 0x0000006f;
 	}
+	if (flags & AMSLOTFLAG_YELLOW) {
+		colour = 0x40360000 | (u32)(g_AmMenus[g_AmIndex].alphafrac * 0x8f);
+	} else if (flags & AMSLOTFLAG_BLUE) {
+		colour = 0x102d6600 | (u32)(g_AmMenus[g_AmIndex].alphafrac * 0x8f);
+	}
 
 	gdl = textSetPrimColour(gdl, colour);
 
@@ -1194,6 +1232,11 @@ Gfx *amRenderSlot(Gfx *gdl, char *text, s16 x, s16 y, s32 mode, s32 flags)
 
 	if (g_Vars.currentplayer->activemenumode == AMMODE_EDIT) {
 		colour = 0x4f4f4f7f;
+	}
+	if (flags & AMSLOTFLAG_YELLOW) {
+		colour = 0xffff0000 | (u32)(g_AmMenus[g_AmIndex].alphafrac * 0x8f);
+	} else if (flags & AMSLOTFLAG_BLUE) {
+		colour = 0x409cff00 | (u32)(g_AmMenus[g_AmIndex].alphafrac * 0x8f);
 	}
 
 	gdl = textSetPrimColour(gdl, colour);
@@ -1503,8 +1546,7 @@ Gfx *amRender(Gfx *gdl)
 			}
 #endif
 
-			colour = (sinf(g_AmMenus[g_AmIndex].selpulse) + 1) * 127;
-			colour = 0xff0000ff | colour << 8 | colour << 16;
+			colour = 0xff0000ff;
 
 			if (g_Vars.currentplayer->activemenumode == AMMODE_EDIT) {
 				colour = 0x4f4f4f7f;

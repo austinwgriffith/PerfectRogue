@@ -9,6 +9,9 @@
 #include "lib/memp.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "gemusic.h"
+#endif
 
 struct stagemusic g_StageTracks[] = {
 	// stage,              main theme,           background sfx,          X theme
@@ -43,6 +46,15 @@ s32 stageGetPrimaryTrack(s32 stagenum)
 {
 	s32 i;
 
+#ifndef PLATFORM_N64
+	// MOD: a GoldenEye level plays what GoldenEye plays on it (gemusic.c)
+	const s32 ge = geMusicStageTrack(stagenum, GEMUSIC_MAIN);
+
+	if (ge != GEMUSIC_NOTOURS) {
+		return ge;
+	}
+#endif
+
 	if (g_Vars.normmplayerisrunning) {
 		return mpChooseTrack();
 	}
@@ -68,6 +80,14 @@ s32 stageGetAmbientTrack(s32 stagenum)
 {
 	s32 i = 0;
 
+#ifndef PLATFORM_N64
+	const s32 ge = geMusicStageTrack(stagenum, GEMUSIC_BACKGROUND);
+
+	if (ge != GEMUSIC_NOTOURS) {
+		return ge;
+	}
+#endif
+
 	while (g_StageTracks[i].stagenum) {
 		if (g_StageTracks[i].stagenum == stagenum) {
 			return g_StageTracks[i].ambienttrack;
@@ -82,6 +102,14 @@ s32 stageGetAmbientTrack(s32 stagenum)
 s32 stageGetNrgTrack(s32 stagenum)
 {
 	s32 i = 0;
+
+#ifndef PLATFORM_N64
+	const s32 ge = geMusicStageTrack(stagenum, GEMUSIC_X);
+
+	if (ge != GEMUSIC_NOTOURS) {
+		return ge;
+	}
+#endif
 
 	while (g_StageTracks[i].stagenum) {
 		if (g_StageTracks[i].stagenum == stagenum) {

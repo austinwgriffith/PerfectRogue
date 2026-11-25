@@ -1,3 +1,4 @@
+#include "game/modheads.h"
 #include <stdlib.h>
 #include <string.h>
 #include <PR/ultratypes.h>
@@ -9,6 +10,7 @@
 #include "mod.h"
 #include "data.h"
 #include "game/stagetable.h"
+#include "gelevels.h"
 
 #define MOD_TEXTURES_DIR "textures"
 #define MOD_ANIMATIONS_DIR "animations"
@@ -416,9 +418,68 @@ s32 modConfigLoad(const char *fname)
 	return success;
 }
 
+/**
+ * Where the texture being loaded now comes from, for the texture pool's key
+ * (struct tex's srcmod): 0 the ROM or textures/, else a Perfect Random bank
+ * head's own copy of a stock texture (modheads.c).
+ */
+s32 modTextureSource(void)
+{
+	if (modHeadsLoadingSlot() >= 0) {
+		return MODHEADS_SRCMOD_BASE + modHeadsLoadingSlot();
+	}
+
+	// MOD: GoldenEye levels - a GoldenEye room's or prop's textures are
+	// GoldenEye's under Perfect Dark's numbers (gelevels.h)
+	if (gelevelsTexActive()) {
+		return GELEVELS_SRCMOD;
+	}
+
+	return 0;
+}
+
+#include "levelgentex.h"
+
+/**
+ * The level generator's own textures (levelgentex.h, made by
+ * tools/levelgen/lgtexgen.py): numbers past the game's last, built into the
+ * port (2026-11-15).
+ */
+s32 modTextureIsOwn(u16 num)
+{
+	return num >= LGTEX_FIRST && num < LGTEX_FIRST + LGTEX_COUNT;
+}
+
 s32 modTextureLoad(u16 num, void *dst, u32 dstSize)
 {
 	static s32 dirExists = -1;
+
+	if (modTextureIsOwn(num)) {
+		const u32 size = g_LgTexSize[num - LGTEX_FIRST];
+
+		if (size > dstSize) {
+			return -1;
+		}
+		memcpy(dst, g_LgTexData[num - LGTEX_FIRST], size);
+		return (s32)size;
+	}
+
+	// A bank head's texture is its own file or else the base head's in the
+	// ROM: never textures/'s under that number (modheads.c)
+	if (modHeadsLoadingSlot() >= 0) {
+		return modHeadsTextureLoad(num, dst, dstSize);
+	}
+
+	// MOD: GoldenEye levels (gelevels.h); a number GoldenEye has no texture
+	// for falls through to Perfect Dark's
+	if (gelevelsTexActive()) {
+		const s32 ret = gelevelsTextureLoad(num, dst, dstSize);
+
+		if (ret > 0) {
+			return ret;
+		}
+	}
+
 	if (dirExists < 0) {
 		dirExists = (fsFileSize(MOD_TEXTURES_DIR) >= 0);
 	}

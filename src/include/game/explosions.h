@@ -9,6 +9,7 @@ void explosionsReset(void);
 void explosionsStop(void);
 
 bool explosionCreateSimple(struct prop *prop, struct coord *pos, RoomNum *rooms, s16 type, s32 playernum);
+bool explosionCreateExplosiveExit(struct coord *pos, RoomNum *rooms);
 bool explosionCreateComplex(struct prop *prop, struct coord *pos, RoomNum *rooms, s16 type, s32 playernum);
 f32 explosionGetHorizontalRangeAtFrame(struct explosion *exp, s32 frame);
 f32 explosionGetVerticalRangeAtFrame(struct explosion *exp, s32 frame);

@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modoptions.h"
 #include "constants.h"
 #include "game/cheats.h"
 #include "game/dlights.h"

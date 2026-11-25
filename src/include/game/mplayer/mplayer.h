@@ -54,6 +54,7 @@ void mpEndMatch(void);
 s32 mpGetNumHeads2(void);
 s32 mpGetNumHeads(void);
 s32 mpGetHeadId(u8 headnum);
+s32 mpGetMaleHeadId(u32 pick);
 s32 mpGetHeadRequiredFeature(u8 headnum);
 s32 mpGetBeauHeadId(u8 headnum);
 u32 mpGetNumBodies(void);

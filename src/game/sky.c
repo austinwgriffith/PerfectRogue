@@ -62,7 +62,6 @@ void skyGetWorldPosFromScreenPos(f32 left, f32 top, struct coord *dst)
 
 	pos[0] = left + camGetScreenLeft();
 	pos[1] = top + camGetScreenTop() + envGetCurrent()->clouds_height;
-
 	cam0f0b4c3c(pos, dst, 100);
 	mtx4RotateVecInPlace(mtx, dst);
 }

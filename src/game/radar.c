@@ -1,5 +1,8 @@
 #include <ultra64.h>
+#include "game/modrandom.h"
+#include "game/modrules.h"
 #include "constants.h"
+#include "prcompat.h"
 #include "game/cheats.h"
 #include "game/chraction.h"
 #include "game/atan2f.h"
@@ -247,12 +250,32 @@ Gfx *radarRender(Gfx *gdl)
 	s32 playernum;
 	struct textureconfig *tconfig;
 	struct coord pos;
+	struct chrdata *targetchr;
+	struct chrdata *leader = NULL;
+	const s32 leadernum = modRandomGetAlienLeader();
+	struct coord zonepos;
+	bool zoneon;
 	u32 colour;
 	s32 i;
 
 	tconfig = g_TexRadarConfigs;
 	playernum = g_Vars.currentplayernum;
 	playercount = PLAYERCOUNT();
+	targetchr = NULL;
+	if (modRandomGetObjectiveTarget() >= 0) {
+		targetchr = chrFindByLiteralId(modRandomGetObjectiveTarget());
+	}
+	if (leadernum >= 0) {
+		for (i = 0; i < g_NumChrSlots; i++) {
+			struct chrdata *chr = &g_ChrSlots[i];
+			if (chr->chrnum == leadernum && chr->prop
+					&& chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
+				leader = chr;
+				break;
+			}
+		}
+	}
+	zoneon = modRandomGetClimaxZone(&zonepos);
 
 	if (g_Vars.mplayerisrunning) {
 		if (g_Vars.normmplayerisrunning && (g_MpSetup.options & MPOPTION_NORADAR)) {
@@ -262,7 +285,8 @@ Gfx *radarRender(Gfx *gdl)
 		if ((g_PlayerConfigsArray[g_Vars.currentplayerstats->mpindex].base.displayoptions & 0x00000004) == 0) {
 			return gdl;
 		}
-	} else if ((g_Vars.currentplayer->devicesactive & ~g_Vars.currentplayer->devicesinhibit & DEVICE_RTRACKER) == 0) {
+	} else if ((g_Vars.currentplayer->devicesactive & ~g_Vars.currentplayer->devicesinhibit & DEVICE_RTRACKER) == 0
+			&& targetchr == NULL && leader == NULL && !zoneon && !modRandomTacticsDefenderRadarOn()) {
 		if (!g_MissionConfig.iscoop || !g_Vars.coopradaron) {
 			return gdl;
 		}
@@ -384,6 +408,49 @@ Gfx *radarRender(Gfx *gdl)
 		}
 	}
 
+	// The current Randomizer kill target is always marked, even without the
+	// R-tracker device. A distinct red blip makes the objective easy to locate.
+	if (targetchr && targetchr->prop
+			&& targetchr->actiontype != ACT_DIE && targetchr->actiontype != ACT_DEAD) {
+		pos.x = targetchr->prop->pos.x - g_Vars.currentplayer->prop->pos.x;
+		pos.y = targetchr->prop->pos.y - g_Vars.currentplayer->prop->pos.y;
+		pos.z = targetchr->prop->pos.z - g_Vars.currentplayer->prop->pos.z;
+		gdl = radarDrawDot(gdl, targetchr->prop, &pos, modRandomObjectiveTargetIsPacify() ? 0x3070ff00 : 0xffff0000, 0, 0);
+	}
+
+	if (leader) {
+		pos.x = leader->prop->pos.x - g_Vars.currentplayer->prop->pos.x;
+		pos.y = leader->prop->pos.y - g_Vars.currentplayer->prop->pos.y;
+		pos.z = leader->prop->pos.z - g_Vars.currentplayer->prop->pos.z;
+		gdl = radarDrawDot(gdl, leader->prop, &pos, 0xffff0000, 0, 0);
+	}
+
+	// Tactics debug markers use the enabled roles' colours.
+	for (i = 0; i < g_NumChrSlots; i++) {
+		struct chrdata *chr = &g_ChrSlots[i];
+
+		if (chr->chrnum >= 0 && chr->prop && chr->model && chr != targetchr) {
+			u32 tacticscolour = modRandomTacticsRadarColour(chr);
+
+			if (tacticscolour == 0) {
+				continue;
+			}
+
+			pos.x = chr->prop->pos.x - g_Vars.currentplayer->prop->pos.x;
+			pos.y = chr->prop->pos.y - g_Vars.currentplayer->prop->pos.y;
+			pos.z = chr->prop->pos.z - g_Vars.currentplayer->prop->pos.z;
+			gdl = radarDrawDot(gdl, chr->prop, &pos, tacticscolour, 0, 0);
+		}
+	}
+
+	// The climax zone, a magenta blip at the edge of the radar when it is far
+	if (zoneon) {
+		pos.x = zonepos.x - g_Vars.currentplayer->prop->pos.x;
+		pos.y = zonepos.y - g_Vars.currentplayer->prop->pos.y;
+		pos.z = zonepos.z - g_Vars.currentplayer->prop->pos.z;
+		gdl = radarDrawDot(gdl, NULL, &pos, 0xff00ff00, 0, 0);
+	}
+
 	// Draw dots for MP simulants
 #ifdef PLATFORM_N64
 	if (g_Vars.normmplayerisrunning) {
@@ -437,6 +504,72 @@ Gfx *radarRender(Gfx *gdl)
 #endif
 
 	g_ScaleX = 1;
+
+	return gdl;
+}
+
+/**
+ * Draw a blinking square at a world position, even through walls.
+ */
+static Gfx *radarRenderWorldMarker(Gfx *gdl, struct coord world, u32 colour, u32 brightcolour)
+{
+	struct coord scr;
+	s32 x;
+	s32 y;
+	s32 scale = 1;
+	bool bright = (g_Vars.lvframe60 / 20) & 1;
+
+	world.y += 60.0f;
+
+	if (!bg3dPosTo2dPos(&world, &scr)) {
+		return gdl;
+	}
+
+	x = (s32)scr.x;
+	y = (s32)scr.y;
+
+	if (x < viGetViewLeft() + 3 || x > viGetViewLeft() + viGetViewWidth() - 3
+			|| y < viGetViewTop() + 3 || y > viGetViewTop() + viGetViewHeight() - 3) {
+		return gdl;
+	}
+
+#if !PAL
+	if (g_ViRes == VIRES_HI) {
+		scale = 2;
+	}
+#endif
+
+	g_ScaleX = scale;
+	x /= scale;
+	gdl = func0f153134(gdl);
+	gdl = textSetPrimColour(gdl, bright ? brightcolour : colour);
+	gDPFillRectangleScaled(gdl++, x - 1, y - 1, x + 1, y + 1);
+	gdl = text0f153838(gdl);
+	g_ScaleX = 1;
+
+	return gdl;
+}
+
+Gfx *radarRenderWorldObjectiveMarkers(Gfx *gdl)
+{
+	struct coord pos;
+	bool pacify;
+
+	if (g_Vars.currentplayer->mpmenuon || g_Vars.currentplayer->isdead) {
+		return gdl;
+	}
+
+	if (modRandomGetClimaxZone(&pos)) {
+		gdl = radarRenderWorldMarker(gdl, pos, 0xff00ddff, 0xff60ffff);
+	}
+
+	if (modRandomGetTargetLocatorPos(&pos, &pacify)) {
+		if (pacify) {
+			gdl = radarRenderWorldMarker(gdl, pos, 0x0060ffff, 0x60b0ffff);
+		} else {
+			gdl = radarRenderWorldMarker(gdl, pos, 0xffdd00ff, 0xffff60ff);
+		}
+	}
 
 	return gdl;
 }

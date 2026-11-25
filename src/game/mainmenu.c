@@ -1,6 +1,10 @@
 #include <ultra64.h>
+#include <string.h>
+#include "game/modrandom.h"
+#include "game/modrules.h"
 #include <stdlib.h>
 #include "constants.h"
+#include "prcompat.h"
 #include "game/bondgun.h"
 #include "game/bossfile.h"
 #include "game/challenge.h"
@@ -4295,18 +4299,38 @@ MenuItemHandlerResult menuhandlerFrInventoryList(s32 operation, struct menuitem 
 
 MenuItemHandlerResult menuhandlerInventoryList(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+	s32 count = invGetCount();
+	bool canrelocate = invHasSingleWeaponExcAllGuns(WEAPON_TARGETLOCATOR) && modRandomCanRelocateTarget();
+
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
-		data->list.value = invGetCount();
+		data->list.value = count + canrelocate;
 		break;
 	case MENUOP_GETOPTIONTEXT:
+		if (canrelocate && data->list.value == count) {
+			return (uintptr_t)"Relocate target\n";
+		}
 		return (uintptr_t)invGetNameByIndex(data->list.value);
 	case MENUOP_SET:
 		{
+			if (data->list.value >= count) {
+				if (canrelocate && data->list.value == count && data->list.unk04 == 0) {
+					modRandomRequestTargetRelocation();
+				}
+				break;
+			}
+
 			s32 weaponnum = invGetWeaponNumByIndex(data->list.value);
 			bool equippable = true;
 
-			if (weaponnum != WEAPON_NONE) {
+			if (weaponnum == WEAPON_TARGETLOCATOR) {
+				equippable = false;
+				if (data->list.unk04 == 0) {
+					modRandomUseTargetLocator();
+				}
+			}
+
+			if (equippable && weaponnum != WEAPON_NONE) {
 				s32 state = currentPlayerGetDeviceState(weaponnum);
 
 				if (state != DEVICESTATE_UNEQUIPPED) {
@@ -4360,7 +4384,8 @@ MenuItemHandlerResult menuhandlerInventoryList(s32 operation, struct menuitem *i
 		}
 		break;
 	case MENUOP_LISTITEMFOCUS:
-		g_InventoryWeapon = invGetWeaponNumByIndex(data->list.value);
+		g_InventoryWeapon = data->list.value < count
+			? invGetWeaponNumByIndex(data->list.value) : WEAPON_TARGETLOCATOR;
 		g_Menus[g_MpPlayerNum].training.weaponnum = g_InventoryWeapon;
 
 		func0f0f139c(&g_SoloMissionInventoryMenuItems[1], -1);
@@ -4820,6 +4845,18 @@ MenuItemHandlerResult menuhandlerMainMenuSoloMissions(s32 operation, struct menu
 	if (operation == MENUOP_SET) {
 		g_MissionConfig.iscoop = false;
 		g_MissionConfig.isanti = false;
+
+#ifndef PLATFORM_N64
+		// The ordinary way into a mission is also what takes the trial back
+		// off, so that arming one from Ghost Trials and then starting a
+		// mission from here gets the ordinary mission.
+		modGhostDisarmTrial();
+
+		// And a mission armed as a random one from the Randomizer page, for
+		// the same reason: this door is the ordinary mission.
+		modRandomDisarmMission();
+#endif
+
 		menuPushDialog(&g_SelectMissionMenuDialog);
 	}
 
@@ -4852,6 +4889,12 @@ MenuItemHandlerResult menuhandlerMainMenuCooperative(s32 operation, struct menui
 	if (operation == MENUOP_SET) {
 		g_MissionConfig.iscoop = true;
 		g_MissionConfig.isanti = false;
+#ifndef PLATFORM_N64
+		// Backing out of the Randomizer or Ghost Trials page's mission select
+		// leaves its arming on; this door is an ordinary mission too.
+		modGhostDisarmTrial();
+		modRandomDisarmMission();
+#endif
 		menuPushDialog(&g_SelectMissionMenuDialog);
 	}
 
@@ -4869,6 +4912,10 @@ MenuItemHandlerResult menuhandlerMainMenuCounterOperative(s32 operation, struct 
 	if (operation == MENUOP_SET) {
 		g_MissionConfig.iscoop = false;
 		g_MissionConfig.isanti = true;
+#ifndef PLATFORM_N64
+		modGhostDisarmTrial();
+		modRandomDisarmMission();
+#endif
 		menuPushDialog(&g_SelectMissionMenuDialog);
 	}
 
@@ -4925,6 +4972,7 @@ struct menuitem g_MainMenuMenuItems[] = {
 		0x00000001,
 		NULL,
 	},
+#ifdef PLATFORM_N64
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -4933,6 +4981,20 @@ struct menuitem g_MainMenuMenuItems[] = {
 		0x00000002,
 		menuhandlerMainMenuSoloMissions,
 	},
+#else
+	{
+		// Perfect Rogue's pages (port/src/randommenu.c)
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Perfect Rogue",
+		0x00000008,
+		(void *)&g_PerfectRandomMenuDialog,
+	},
+	// The Randomizer page (g_RandomizerMenuDialog, randommenu.c) is kept but
+	// not on the main menu: put its item back here, after Perfect Rogue,
+	// to bring it back.
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		1,
@@ -4941,6 +5003,7 @@ struct menuitem g_MainMenuMenuItems[] = {
 		0x00000003,
 		menuhandlerMainMenuCombatSimulator,
 	},
+#ifdef PLATFORM_N64
 	{
 		MENUITEMTYPE_SELECTABLE,
 		2,
@@ -4957,6 +5020,7 @@ struct menuitem g_MainMenuMenuItems[] = {
 		0x00000005,
 		menuhandlerMainMenuCounterOperative,
 	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

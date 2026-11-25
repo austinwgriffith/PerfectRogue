@@ -182,7 +182,7 @@ void ragdollBuildRoom(struct meshbuilder *mbfloor, struct meshbuilder *mbwall, s
  */
 #define RD_CEIL_MINDOWN 0.35f // triangle normal.y at most -this counts as a ceiling (for the log)
 #define RD_RENDER_MAXUP 0.35f // added when normal.y is below this (walls and ceilings; floors are steeper up)
-#define RD_CEIL_ROOMSPERTICK 4
+#define RD_CEIL_ROOMSPERTICK 1 // (each room costs up to 4 ms with its neighbours' re-check: four at once was a 15 ms hitch)
 #define RD_VTXBATCHTYPE_OPA 0x01 // as in bg.c
 #define RD_PASS_REACH  200.0f // translucent surfaces this close above a floor are within the player's reach
 #define RD_PASS_BACKED 40.0f  // ... and solid for the player if collision is this close in front or behind

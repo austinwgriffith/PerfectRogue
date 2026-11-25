@@ -7,6 +7,10 @@
 extern u16 g_ControlStyleOptions[];
 
 extern struct menudialogdef g_AcceptMissionMenuDialog;
+extern struct menudialogdef g_SelectMissionMenuDialog;
+// Perfect Random's pages, next to the door marked Solo Missions (port/src/randommenu.c)
+extern struct menudialogdef g_RandomizerMenuDialog;
+extern struct menudialogdef g_PerfectRandomMenuDialog;
 extern struct menudialogdef g_PreAndPostMissionBriefingMenuDialog;
 extern struct menudialogdef g_RetryMissionMenuDialog;
 extern struct menudialogdef g_NextMissionMenuDialog;

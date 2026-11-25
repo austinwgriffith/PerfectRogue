@@ -1,0 +1,62 @@
+#ifndef _IN_GECHRANIMS_H
+#define _IN_GECHRANIMS_H
+
+#include <ultra64.h>
+#include "types.h"
+
+/**
+ * GoldenEye's own animations on a converted level's characters.
+ * port/src/gechranims.c.
+ *
+ * Perfect Dark's first 183 animation numbers are GoldenEye's own table in
+ * GoldenEye's order, and chraction.c is GoldenEye's chrlv.c grown, so most of
+ * what a guard plays is already named by GoldenEye's number - Perfect Dark
+ * re-made the frames behind it. On a remake stage those rows are served out of
+ * the conversion's own animations (animOverride()), and where Perfect Dark
+ * went its own way - the hit and death tables, the walks and runs by weapon,
+ * the side step, the grenade, the blast deaths - chraction.c asks for
+ * GoldenEye's choice while g_GeChrAnims is on.
+ */
+
+// on while the stage's characters play GoldenEye's own animations
+extern s32 g_GeChrAnims;
+
+/** Before a stage's characters are made: on for a remake stage, off otherwise. */
+void geChrAnimsStageStart(s32 stagenum);
+// Perfect Dark's animations under its own numbers again, until the next
+// converted stage's start (modsegs.c, before the animation table is swapped)
+void geChrAnimsOff(void);
+
+/** Our number for GoldenEye's own animation geid (its initanitable.c id), or -1. */
+s32 geChrAnim(s32 geid);
+
+/** GoldenEye's death_stagger: shot dead against a wall. rngRandom() & 1 picks. */
+struct animtablerow *geChrAnimsStagger(s32 index);
+
+/**
+ * One of GoldenEye's blast deaths for a blast from side (0-7, as chraction.c's
+ * angle index), picked with pick; false when there is none.
+ */
+s32 geChrAnimsBlast(s32 side, u32 pick, s32 *animnum, s32 *flip, f32 *speed, f32 *startframe, f32 *thudframe, f32 *endframe);
+
+/**
+ * Whether a converted level's characters die by Perfect Dark's death
+ * animations as well as GoldenEye's (Mod.GePlusPdDeathAnims, on a remake stage).
+ */
+s32 geChrAnimsPdDeaths(void);
+
+/** The setting as the menu has it, and its switch. */
+s32 geChrAnimsGetPdDeaths(void);
+void geChrAnimsSetPdDeaths(s32 on);
+
+/** A number that plays Perfect Dark's own animation animnum on a remake stage. */
+s32 geChrAnimsPd(s32 animnum);
+
+/**
+ * Whether the animation number playing is Perfect Dark's own animnum served
+ * beside GoldenEye's under geChrAnimsPd()'s number - code that asks "is this
+ * chr playing animnum" asks this as well, or Perfect Dark's frames go unseen.
+ */
+s32 geChrAnimsPlayingPd(s32 playing, s32 animnum);
+
+#endif

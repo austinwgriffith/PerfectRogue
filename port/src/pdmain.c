@@ -1,10 +1,16 @@
 #include <stdlib.h>
 
 #include <ultra64.h>
+#include "game/modcareer.h"
+#include "game/modrun.h"
+#include "game/modspawnedit.h"
+#include "game/modrandom.h"
+#include "game/modoptions.h"
 #include <PR/ultrasched.h>
 #include "lib/sched.h"
 #include "lib/vars.h"
 #include "constants.h"
+#include "prcompat.h"
 #include "game/camdraw.h"
 #include "game/cheats.h"
 #include "game/debug.h"
@@ -12,6 +18,9 @@
 #include "game/lang.h"
 #include "game/race.h"
 #include "game/body.h"
+#include "game/atan2f.h"
+#include "game/chraction.h"
+#include "game/pad.h"
 #include "game/stubs/game_000840.h"
 #include "game/stubs/game_000850.h"
 #include "game/stubs/game_000860.h"
@@ -48,6 +57,7 @@
 #include "lib/audiomgr.h"
 #include "lib/args.h"
 #include "lib/boot.h"
+#include "lib/collision.h"
 #include "lib/vm.h"
 #include "lib/rzip.h"
 #include "lib/vi.h"
@@ -76,6 +86,69 @@
 #include "data.h"
 #include "types.h"
 #include "system.h"
+#include "gelevels.h"
+#include "levelgenstage.h"
+
+static bool spawnFacingAuditClear(struct coord *pos, RoomNum *rooms, f32 angle)
+{
+	if (angle >= M_BADTAU) {
+		angle -= M_BADTAU;
+	}
+	struct coord end = { pos->x + sinf(angle) * 120.0f, pos->y, pos->z + cosf(angle) * 120.0f };
+	return cdTestLos03(pos, rooms, &end, CDTYPE_BG, GEOFLAG_WALL | GEOFLAG_BLOCK_SIGHT);
+}
+
+static void auditSpawnFacing(void)
+{
+	s32 pads = g_PadsFile ? g_PadsFile->numpads : 0;
+	s32 floorpads = 0, turns = 0, improved = 0, confined = 0, failures = 0;
+	const f32 step = M_BADTAU / 16.0f;
+
+	for (s32 i = 0; i < pads; i++) {
+		struct pad pad;
+		u16 flags = 0;
+		padUnpack(i, PADFIELD_POS | PADFIELD_LOOK | PADFIELD_ROOM, &pad);
+		if (pad.room <= 0 || pad.room >= g_Vars.roomcount) {
+			continue;
+		}
+
+		RoomNum rooms[2] = { pad.room, -1 };
+		struct coord probe = { pad.pos.x, pad.pos.y + 100.0f, pad.pos.z };
+		f32 ground = cdFindGroundInfoAtCyl(&probe, 20.0f, rooms, NULL, NULL, &flags, NULL, NULL, NULL);
+		if (ground <= -100000.0f || flags & GEOFLAG_DIE) {
+			continue;
+		}
+
+		floorpads++;
+		probe.y = ground + 100.0f;
+		f32 angle = atan2f(pad.look.x, pad.look.z);
+		for (s32 j = 0; j < 4; j++, angle += M_BADTAU / 4.0f) {
+			if (angle >= M_BADTAU) {
+				angle -= M_BADTAU;
+			}
+
+			bool before = spawnFacingAuditClear(&probe, rooms, angle);
+			f32 facing = chrSpawnFacingAwayFromWall(&probe, rooms, angle);
+			bool after = spawnFacingAuditClear(&probe, rooms, facing);
+			turns += facing != angle;
+			improved += !before && after;
+			failures += before && !after;
+
+			if (!before && !after) {
+				bool anyclear = false;
+				for (s32 direction = 1; direction < 16 && !anyclear; direction++) {
+					anyclear = spawnFacingAuditClear(&probe, rooms, angle + direction * step);
+				}
+				failures += anyclear;
+				confined += !anyclear;
+			}
+		}
+	}
+
+	sysLogPrintf(LOG_NOTE, "SPAWN FACING RESULT 0x%02x pads %d floor %d turns %d improved %d confined %d failures %d",
+			g_Vars.stagenum, pads, floorpads, turns, improved, confined, failures);
+	exit(pads == 0 || failures != 0);
+}
 
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
@@ -412,6 +485,12 @@ void mainLoop(void)
 					}
 				}
 
+				// MOD: GoldenEye levels are not in the table (gelevels.c)
+				if (g_StageAllocations8Mb[index].stagenum == 0 && gelevelsAllocation(g_StageNum)) {
+					argSetString((char *)gelevelsAllocation(g_StageNum));
+				} else if (g_StageAllocations8Mb[index].stagenum == 0 && levelgenAllocation(g_StageNum)) {
+					argSetString((char *)levelgenAllocation(g_StageNum)); // MOD: level generator
+				} else
 				argSetString(g_StageAllocations8Mb[index].string);
 			}
 		}
@@ -438,7 +517,7 @@ void mainLoop(void)
 		langReset(g_StageNum);
 		playermgrReset();
 
-		if (g_StageNum >= STAGE_TITLE) {
+		if (g_StageNum >= STAGE_TITLE && !(sysArgCheck("--audit-spawn-facing") && STAGE_IS_LEVEL(g_StageNum))) {
 			numplayers = 0;
 		} else {
 			if (argFindByPrefix(1, "-play")) {
@@ -505,6 +584,9 @@ void mainLoop(void)
 		dhudReset();
 		zbufReset(g_StageNum);
 		lvReset(g_StageNum);
+		if (sysArgCheck("--audit-spawn-facing")) {
+			auditSpawnFacing();
+		}
 		viReset(g_StageNum);
 		frametimeCalculate();
 		profileReset();
@@ -514,7 +596,9 @@ void mainLoop(void)
 			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
 				schedStartFrame(&g_Sched);
 				mainTick();
+				{ u64 perf0 = sysGetMicroseconds();
 				schedEndFrame(&g_Sched);
+				g_ModPerfUs[11] += sysGetMicroseconds() - perf0; }
 			}
 			if (g_TickExtraSleep) {
 				sysSleep(EXTRA_SLEEP_TIME);
@@ -536,7 +620,7 @@ void mainLoop(void)
 void mainTick(void)
 {
 	Gfx *gdl = NULL;
-	Gfx *gdlstart = NULL;
+	Gfx * volatile gdlstart = NULL; // volatile: read again after a recovered fault
 	OSScMsg msg = {OS_SC_DONE_MSG};
 	s32 i;
 
@@ -553,7 +637,17 @@ void mainTick(void)
 			gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, 0, 0x0000, G_TX_LOADTILE, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
 			gDPSetTile(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_4b, 0, 0x0100, 6, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOLOD);
 
+#ifdef CRASH_RECOVERY
+			// MOD: a fault in the game logic or the render abandons this frame
+			// (a blank one goes out) and the game carries on (crash.c)
+			if (__builtin_setjmp(crashRecoverBuf()) != 0) {
+				gdl = gdlstart;
+			} else {
+			crashRecoverArm();
+#endif
+			{ u64 perf0 = sysGetMicroseconds();
 			lvTick();
+			g_ModPerfUs[0] += sysGetMicroseconds() - perf0; }
 			playermgrShuffle();
 
 			if (g_StageNum < STAGE_TITLE) {
@@ -567,26 +661,39 @@ void mainTick(void)
 								g_Vars.currentplayer->viewwidth, g_Vars.currentplayer->viewheight);
 					}
 
+					{ u64 perf0 = sysGetMicroseconds();
 					lvTickPlayer();
+					g_ModPerfUs[2] += sysGetMicroseconds() - perf0; }
 				}
 			}
 
+			{ u64 perf0 = sysGetMicroseconds();
 			gdl = lvRender(gdl);
+			g_ModPerfUs[3] += sysGetMicroseconds() - perf0; }
 
 			if (debugGetProfileMode() >= 2) {
 				gdl = profileRender(gdl);
 			}
+
+#ifdef CRASH_RECOVERY
+			crashRecoverDisarm();
+			}
+#endif
 
 			gDPFullSync(gdl++);
 			gSPEndDisplayList(gdl++);
 		}
 
 		if (g_MainGameLogicEnabled) {
+			u64 perf0 = sysGetMicroseconds();
 			gfxSwapBuffers();
 			viUpdateMode();
+			g_ModPerfUs[4] += sysGetMicroseconds() - perf0;
 		}
 
+		{ u64 perf0 = sysGetMicroseconds();
 		rdpCreateTask(gdlstart, gdl, 0, (uintptr_t) &msg);
+		g_ModPerfUs[10] += sysGetMicroseconds() - perf0; }
 		memaPrint();
 		profileSetMarker(PROFILE_MAINTICK_END);
 	}
@@ -595,6 +702,27 @@ void mainTick(void)
 void mainEndStage(void)
 {
 	sndStopNosedive();
+
+	// A Play from the Spawn Customizer goes back to the editor, not to the end screen
+	if (modSpawnEditPlayEnded()) {
+		g_MainIsEndscreen = true;
+		return;
+	}
+
+	// The endscreen is the end of a Randomizer run too (Abort Mission is the
+	// way here; a death and the map's own ending never are, see playerTick()
+	// and aiEndLevel()), so whatever the player picks from it - Retry, Next
+	// Mission - is an ordinary mission and not another of the run's rooms.
+	if (modRunIsOn() && !g_Vars.normmplayerisrunning) {
+		sysLogPrintf(0, "run: the stage ended under the run; ending the run");
+		modRunStop();
+	}
+
+	bool gauntletwon = false;
+
+	// Death, Abort Mission, anything but a completed gauntlet mission: the
+	// Perfect Random Gauntlet is over (modcareer.c).
+	modCareerOnStageEnded();
 
 	if (!g_MainIsEndscreen) {
 		pak0f11c6d0();
@@ -624,6 +752,16 @@ void mainEndStage(void)
 			musicStartMenu();
 		} else if (g_Vars.normmplayerisrunning) {
 			mpEndMatch();
+			if (g_NetMode != NETMODE_NONE) netHostMatchEnded();
+		} else if (modCareerSummaryTake(&gauntletwon)) {
+			// A Perfect Random Gauntlet ended (won, lost or abandoned): its
+			// own closing screen, in place of the mission's
+			randomMenuSummaryPush();
+			musicStartMenu();
+		} else if (gexFrontMissionReport()) {
+			// A mission GE Plus's folder started ends as GoldenEye's do: no
+			// endscreen over the level, but out of it to the folder's own
+			// report and statistics pages (gexfront.c)
 		} else {
 			endscreenPrepare();
 			musicStartMenu();
@@ -638,6 +776,14 @@ void mainEndStage(void)
  */
 void mainChangeToStage(s32 stagenum)
 {
+	// The editor arms the Randomizer and may use its arena setup. A retry
+	// or another mission can come straight from the end screen, bypassing
+	// the mission pickers that normally reset both modes.
+	if (modSpawnEditIsOn()) {
+		modRunStop();
+		modRandomDisarmMission();
+	}
+
 	pak0f11c6d0();
 
 	g_MainChangeToStageNum = stagenum;

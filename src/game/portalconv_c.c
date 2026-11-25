@@ -11,7 +11,7 @@
  * C that can be dropped in place of the handwritten function by linking the
  * different file.
  */
-s32 portalConvertCoordinates(s32 portalnum, s32 *start, struct portalthing2 *things)
+s32 portalConvertCoordinatesOffset(s32 portalnum, s32 *start, struct portalthing2 *things, f32 offset)
 {
 	Mtxf *mtx = g_Vars.currentplayer->worldtoscreenmtx;
 	struct portalvertices *pvertices = (struct portalvertices *) ((uintptr_t) g_BgPortals + g_BgPortals[portalnum].verticesoffset);
@@ -21,9 +21,9 @@ s32 portalConvertCoordinates(s32 portalnum, s32 *start, struct portalthing2 *thi
 	s32 i;
 
 	for (i = 0; i < pvertices->count; i++) {
-		f32 x = pvertices->vertices[i].x;
-		f32 y = pvertices->vertices[i].y;
-		f32 z = pvertices->vertices[i].z;
+		f32 x = pvertices->vertices[i].x + g_PortalMetrics[portalnum].normal.x * offset;
+		f32 y = pvertices->vertices[i].y + g_PortalMetrics[portalnum].normal.y * offset;
+		f32 z = pvertices->vertices[i].z + g_PortalMetrics[portalnum].normal.z * offset;
 
 		right->coord.x = mtx->m[0][0] * x + mtx->m[1][0] * y + mtx->m[2][0] * z;
 		right->coord.y = mtx->m[0][1] * x + mtx->m[1][1] * y + mtx->m[2][1] * z;
@@ -96,4 +96,9 @@ s32 portalConvertCoordinates(s32 portalnum, s32 *start, struct portalthing2 *thi
 
 	*start = 40 - pvertices->count;
 	return pvertices->count;
+}
+
+s32 portalConvertCoordinates(s32 portalnum, s32 *start, struct portalthing2 *things)
+{
+	return portalConvertCoordinatesOffset(portalnum, start, things, 0);
 }

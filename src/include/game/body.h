@@ -15,8 +15,19 @@ struct model *body0f02d338(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 struct model *bodyAllocateModel(s32 bodynum, s32 headnum, u32 spawnflags);
 s32 body0f02d3f8(void);
 s32 bodyChooseHead(s32 bodynum);
+bool bodyInitSpecialChr(struct chrdata *chr, s32 bodynum);
+s32 bodyFemaleGuardLook(s32 key, s32 bodynum, s32 *headnum);
 void bodyAllocateChr(s32 stagenum, struct packedchr *packed, s32 cmdindex);
 struct prop *bodyAllocateEyespy(struct pad *pad, RoomNum room);
 void bodyCalculateHeadOffset(struct modeldef *headmodeldef, s32 headnum, s32 bodynum);
+
+#ifndef PLATFORM_N64
+struct bodyspawnstats {
+	s32 entries;   // chr entries the setup asked for
+	s32 collision; // refused: something already in the way at the pad
+	s32 spawned;   // chrs that got a prop
+};
+extern struct bodyspawnstats g_BodySpawnStats;
+#endif
 
 #endif

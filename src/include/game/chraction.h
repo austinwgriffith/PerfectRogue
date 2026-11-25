@@ -210,6 +210,7 @@ bool chrAdjustPosForSpawn(f32 chrradius, struct coord *pos, RoomNum *rooms, f32 
 struct prop *chrSpawnAtCoord(s32 body, s32 head, struct coord *pos, RoomNum *room, f32 angle, u8 *ailist, u32 spawnflags);
 bool chrIsPropPresetBlockingSightToTarget(struct chrdata *chr);
 bool chrMoveToPos(struct chrdata *chr, struct coord *pos, RoomNum *room, f32 angle, bool ignorebg);
+void chrMoveToCheckedPos(struct chrdata *chr, struct coord *pos, RoomNum *rooms, f32 angle);
 bool chrCheckCoverOutOfSight(struct chrdata *chr, s32 covernum, bool soft);
 s32 chrAssignCoverByCriteria(struct chrdata *chr, u16 arg1, s32 arg2);
 s32 chrAssignCoverAwayFromDanger(struct chrdata *chr, s32 mindist, s32 maxdist);
@@ -217,6 +218,13 @@ bool chrRunFromPos(struct chrdata *chr, u32 goposflags, f32 distance, struct coo
 f32 func0f04c784(struct chrdata *chr);
 bool chr0f04c874(struct chrdata *chr, u32 angle360, struct coord *pos, u8 arg3, u8 arg4);
 void rebuildTeams(void);
+// MOD: bounds fix - the list sizes follow the stage's chr slots, see chraction.c
+extern s32 g_TeamListSize;
+extern s32 g_SquadronListSize;
+s32 teamListSizeFor(s32 numslots);
+s32 squadronListSizeFor(s32 numslots);
+s32 teamListBuild(s16 *list, s32 size, struct chrdata *slots, s32 numslots);
+s32 squadronListBuild(s16 *list, s32 size, struct chrdata *slots, s32 numslots);
 void rebuildSquadrons(void);
 void chrAvoid(struct chrdata *chr);
 void func0f02e9a0(struct chrdata *chr, f32 mergetime);
@@ -232,6 +240,9 @@ void chrSidestep(struct chrdata *chr, bool side);
 void chrJumpOut(struct chrdata *chr, bool side);
 void chrRunToPos(struct chrdata *chr, struct coord *pos);
 void chrBeginDead(struct chrdata *chr);
+#ifndef PLATFORM_N64
+void chrRecordDeathOrder(struct chrdata *chr);
+#endif
 f32 chrGetShield(struct chrdata *chr);
 void chrDie(struct chrdata *chr, s32 aplayernum);
 void chrGoPosGetCurWaypointInfo(struct chrdata *chr, struct coord *pos, RoomNum *rooms);
@@ -268,6 +279,7 @@ void chrFadeCorpse(struct chrdata *chr);
 void chrFadeCorpseWhenOffScreen(struct chrdata *chr);
 void chrTickTest(struct chrdata *chr);
 void chrSetLookAngle(struct chrdata *chr, f32 angle);
+f32 chrSpawnFacingAwayFromWall(struct coord *pos, RoomNum *rooms, f32 angle);
 f32 chrGetRotY(struct chrdata *chr);
 void chrSetRotY(struct chrdata *chr, f32 arg1);
 void chrResetAimEndProperties(struct chrdata *chr);
@@ -341,4 +353,7 @@ void chrToggleModelPart(struct chrdata *chr, s32 partnum);
 bool chrIsAvoiding(struct chrdata *chr);
 void chrDrCarollEmitSparks(struct chrdata *chr);
 
+extern f32 g_ModPlayerHeadshotScale;
+void modRandomOpenDoorFor(struct chrdata *chr, struct prop *doorprop);
+void chrFlinchFromFall(struct chrdata *chr);
 #endif

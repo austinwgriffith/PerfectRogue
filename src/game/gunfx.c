@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include "game/modrules.h"
 #include "constants.h"
 #include "game/acosfasinf.h"
 #include "game/bondgun.h"
@@ -22,6 +23,9 @@
 
 #define BOLTBEAMTICKMODE_MANUAL    0
 #define BOLTBEAMTICKMODE_AUTOMATIC 1
+#ifndef PLATFORM_N64
+#define LASERSIGHT_MIN_VIEW_DEPTH 8.0f
+#endif
 
 struct casing g_Casings[20];
 struct boltbeam g_BoltBeams[8];
@@ -1092,7 +1096,7 @@ bool lasersightExists(s32 id, s32 *index)
 	s32 exact = -1;
 	s32 i = 0;
 
-	for (; i < 4 && exact == -1; i++) {
+	for (; i < ARRAYCOUNT(g_LaserSights) && exact == -1; i++) {
 		if (g_LaserSights[i].id == id) {
 			exact = i;
 		}
@@ -1190,6 +1194,14 @@ Gfx *lasersightRenderDot(Gfx *gdl)
 			pos.y = g_LaserSights[i].dotpos.y;
 			pos.z = g_LaserSights[i].dotpos.z;
 
+#ifndef PLATFORM_N64
+			struct coord viewpos = pos;
+			mtx4TransformVecInPlace(&sp164, &viewpos);
+			if (!(viewpos.z < -LASERSIGHT_MIN_VIEW_DEPTH)) {
+				continue;
+			}
+#endif
+
 			rot.x = g_LaserSights[i].dotrot.x;
 			rot.y = g_LaserSights[i].dotrot.y;
 			rot.z = g_LaserSights[i].dotrot.z;
@@ -1223,6 +1235,13 @@ Gfx *lasersightRenderDot(Gfx *gdl)
 					pos.z = (pos.z - campos.f[2]) * 5.0f;
 
 					f0 = sqrtf(pos.f[0] * pos.f[0] + pos.f[1] * pos.f[1] + pos.f[2] * pos.f[2]);
+
+#ifndef PLATFORM_N64
+					// Keep the camera-relative quad inside the signed vertex range.
+					if (!(f0 < 32000.0f)) {
+						continue;
+					}
+#endif
 
 					spcc = sp1;
 
@@ -1380,6 +1399,13 @@ Gfx *lasersightRenderBeam(Gfx *gdl)
 			sp98.z = g_LaserSights[i].beamnear.z;
 
 			mtx4TransformVecInPlace(&sp14c, &sp98);
+
+#ifndef PLATFORM_N64
+			// A beam starting at eye level can expand into a full-screen stripe.
+			if (!(sp98.z < -LASERSIGHT_MIN_VIEW_DEPTH)) {
+				continue;
+			}
+#endif
 
 			spa8.x = sp98.f[0] < 0.0f ? 1.0f : -1.0f;
 			spa8.y = 2.0f;

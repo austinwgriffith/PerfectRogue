@@ -1,5 +1,6 @@
 #include <ultra64.h>
 #include "constants.h"
+#include "prcompat.h"
 #include "bss.h"
 #include "lib/memp.h"
 #include "data.h"
@@ -100,6 +101,27 @@ void wallhitReset(void)
 		var8009cc6c = 4096;
 		g_WallhitsCriticalSpareLimit = 25;
 		g_WallhitsGoalSpareLimit = 40;
+	}
+
+	// MOD: gore - no limit on blood decals but the memory. The pool is as big
+	// as a quarter of the stage pool's free space allows (a slot is the decal
+	// and its clip record, about 2 KB), up to 20000 slots for one player and
+	// 8000 for more, and no room or object holds fewer than the whole pool.
+	// Stock's sizes are the floor.
+	if (STAGE_IS_LEVEL(g_Vars.stagenum)) {
+		s32 want = type == 2 ? 20000 : 8000;
+		s32 fit = (s32)((mempGetStageFreeTotal() / 4) / (sizeof(struct wallhit) + 2048));
+
+		if (fit > want) {
+			fit = want;
+		}
+
+		if (fit > g_WallhitsMax) {
+			g_WallhitsMax = fit;
+		}
+
+		g_MaxBgWallhitsPerRoom = g_WallhitsMax;
+		g_MaxPropWallhits = g_WallhitsMax;
 	}
 #endif
 

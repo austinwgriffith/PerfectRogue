@@ -11,6 +11,9 @@
 #include "lib/libc/ll.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "levelgenstage.h"
+#endif
 
 /**
  * Path Finding
@@ -76,6 +79,7 @@ void navSetSeed(u32 upper, u32 lower)
 struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms)
 {
 	struct waypoint *closest = NULL;
+	struct waypoint *fallback = NULL;
 #ifdef AVOID_UB
 	 // prevent bgRoomGetNeighbours or roomsAppend from writing out of bounds
 	RoomNum allrooms[31];
@@ -165,6 +169,15 @@ struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms)
 			padrooms[0] = pad.room;
 			padrooms[1] = -1;
 
+#ifndef PLATFORM_N64
+			if (!levelgenNpcPathHasFloor(pos, &pad.pos)) {
+				checkmore[i] = false;
+				continue;
+			}
+#endif
+			if (!fallback) {
+				fallback = candwaypoints[i];
+			}
 			if (cdTestLos05(pos, rooms, &pad.pos, padrooms, CDTYPE_BG, GEOFLAG_FLOOR1 | GEOFLAG_FLOOR2) != CDRESULT_COLLISION) {
 				s32 cdresult = cdExamCylMove05(pos, rooms, &pad.pos, padrooms, CDTYPE_BG | CDTYPE_PATHBLOCKER, true, 0.0f, 0.0f);
 
@@ -233,8 +246,8 @@ struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms)
 
 			// If the above criteria didn't match anything,
 			// just choose the closest waypoint
-			if (closest == NULL && candlen > 0) {
-				closest = candwaypoints[0];
+			if (closest == NULL) {
+				closest = fallback;
 			}
 		}
 	}

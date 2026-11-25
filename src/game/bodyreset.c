@@ -22,7 +22,9 @@ void bodiesReset(s32 stagenum)
 	s32 whichteamlist = 1;
 	s32 index;
 
-	for (i = 0; g_HeadsAndBodies[i].filenum != 0; i++) {
+	// Model definitions belong to the stage pool. Custom heads and imported
+	// bodies occupy slots beyond the stock table's zero-file terminator.
+	for (i = 0; i < ARRAYCOUNT(g_HeadsAndBodies); i++) {
 		g_HeadsAndBodies[i].modeldef = NULL;
 	}
 

@@ -120,8 +120,8 @@ static const char *ckNames[CK_TOTAL_COUNT] = {
 	"STICK_YPOS",
 	"ACCEPT_BUTTON",
 	"CANCEL_BUTTON",
-	"CK_0040",
-	"CK_0080",
+	"QUICK_GRENADE",
+	"CYCLE_GRENADE",
 	"CK_0100",
 	"CK_0200",
 	"CK_0400",
@@ -190,11 +190,13 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 {
 	// TODO: make VK constants for all these
 	static const u32 pckbbinds[][3] = {
+		{ CK_QUICK_GRENADE, SDL_SCANCODE_G, 0 },
+		{ CK_CYCLE_GRENADE, SDL_SCANCODE_B, 0 },
 		{ CK_B,             SDL_SCANCODE_E,      0                   },
 		{ CK_X,             SDL_SCANCODE_R,      0                   },
 		{ CK_RTRIG,         VK_MOUSE_RIGHT,      SDL_SCANCODE_Z      },
 		{ CK_LTRIG,         SDL_SCANCODE_F,      SDL_SCANCODE_X      },
-		{ CK_ZTRIG,         VK_MOUSE_LEFT,       SDL_SCANCODE_SPACE  },
+		{ CK_ZTRIG,         VK_MOUSE_LEFT,       0                   }, // MOD: Space no longer fires (the Spawn Customizer flies up with it)
 		{ CK_START,         SDL_SCANCODE_TAB,    0                   },
 		{ CK_DPAD_D,        SDL_SCANCODE_Q,      VK_MOUSE_MIDDLE     },
 		{ CK_DPAD_U,        0,                   0                   },
@@ -234,11 +236,13 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 	};
 
 	static const u32 n64kbbinds[][3] = {
+		{ CK_QUICK_GRENADE, SDL_SCANCODE_G, 0 },
+		{ CK_CYCLE_GRENADE, SDL_SCANCODE_B, 0 },
 		{ CK_A,          SDL_SCANCODE_Q,      0                  },
 		{ CK_B,          SDL_SCANCODE_E,      0                  },
 		{ CK_RTRIG,      VK_MOUSE_RIGHT,      SDL_SCANCODE_LALT  },
 		{ CK_LTRIG,      SDL_SCANCODE_F,      0                  },
-		{ CK_ZTRIG,      VK_MOUSE_LEFT,       SDL_SCANCODE_SPACE },
+		{ CK_ZTRIG,      VK_MOUSE_LEFT,       0                  }, // MOD: Space no longer fires
 		{ CK_START,      SDL_SCANCODE_RETURN, 0                  },
 		{ CK_C_D,        SDL_SCANCODE_S,      0                  },
 		{ CK_C_U,        SDL_SCANCODE_W,      0                  },

@@ -1,4 +1,7 @@
 #include <ultra64.h>
+#include <string.h>
+#include "game/modoptions.h"
+#include "game/modrules.h"
 #include "constants.h"
 #include "../lib/naudio/n_sndp.h"
 #include "game/camdraw.h"
@@ -35,6 +38,7 @@
 #include "game/pak.h"
 #include "game/options.h"
 #include "game/propobj.h"
+#include "game/modspawnedit.h"
 #include "bss.h"
 #include "lib/joy.h"
 #include "lib/vi.h"
@@ -689,6 +693,26 @@ void menuCalculateItemSize(struct menuitem *item, s16 *width, s16 *height, struc
 				text2 = (char *)item->handler(MENUOP_GETOPTIONTEXT, item, &handlerdata2);
 				textMeasure(&textheight, &textwidth, text2, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
 
+#ifndef PLATFORM_N64
+				// Perfect Random: model choices can be longer than the
+				// selection when the menu opens
+				if (item->flags & MENUITEMFLAG_DROPDOWN_ALLWIDTHS) {
+					union handlerdata optiondata;
+					s32 count, option, maxwidth = textwidth;
+					optiondata.dropdown.value = 0;
+					item->handler(MENUOP_GETOPTIONCOUNT, item, &optiondata);
+					count = optiondata.dropdown.value;
+					for (option = 0; option < count; option++) {
+						optiondata.dropdown.value = option;
+						text2 = (char *)item->handler(MENUOP_GETOPTIONTEXT, item, &optiondata);
+						if (!text2) continue;
+						textMeasure(&textheight, &textwidth, text2, g_CharsHandelGothicSm, g_FontHandelGothicSm, 0);
+						if (textwidth > maxwidth) maxwidth = textwidth;
+					}
+					textwidth = maxwidth;
+				}
+#endif
+
 #if VERSION >= VERSION_PAL_FINAL
 				if ((item->flags & MENUITEMFLAG_ADJUSTWIDTH) == 0) {
 					*width += textwidth + 10;
@@ -906,6 +930,7 @@ void menuCalculateItemSize(struct menuitem *item, s16 *width, s16 *height, struc
 		break;
 	}
 }
+
 
 const char var7f1b2400[] = "(BNC:Menu) findItem Warning: Item not found\n";
 const char var7f1b2430[] = "(BNC:Menu) menuFirstFocus - Menu %s does not have any focusable item!\n";
@@ -3131,6 +3156,47 @@ Gfx *dialogRender(Gfx *gdl, struct menudialog *dialog, struct menu *menu, bool l
 					viGetViewLeft() + viGetViewWidth(), viGetViewTop() + viGetViewHeight());
 		}
 
+#ifndef PLATFORM_N64
+		// A dialog taller than the room it has: a track and a thumb showing
+		// how much of it is on screen and where
+		if ((dialog->definition->flags & MENUDIALOGFLAG_SCROLLBAR)
+				&& dialog->dstheight < dialog->contentheight
+				&& dialog->height >= dialog->dstheight - 1
+				&& !lightweight) {
+			const s32 trackx2 = dialogright - 3;
+			const s32 trackx1 = trackx2 - 3;
+			const s32 tracky1 = dialogtop + LINEHEIGHT + 3;
+			const s32 tracky2 = dialogbottom - 3;
+			const s32 tracklen = tracky2 - tracky1;
+			const s32 range = dialog->contentheight - dialog->height;
+
+			if (tracklen > 12 && range > 0) {
+				const u32 trackcolour = (MIXCOLOUR(dialog, dialog_border1) & 0xffffff00) | 0x40;
+				const u32 thumbcolour = MIXCOLOUR(dialog, dialog_border1) | 0xff;
+				s32 thumblen = tracklen * dialog->height / dialog->contentheight;
+				s32 offset = -dialog->scroll;
+				s32 thumby1;
+
+				if (thumblen < 10) {
+					thumblen = 10;
+				}
+
+				if (offset < 0) {
+					offset = 0;
+				}
+
+				if (offset > range) {
+					offset = range;
+				}
+
+				thumby1 = tracky1 + (tracklen - thumblen) * offset / range;
+
+				gdl = menugfxDrawFilledRect(gdl, trackx1, tracky1, trackx2, tracky2, trackcolour, trackcolour);
+				gdl = menugfxDrawFilledRect(gdl, trackx1, thumby1, trackx2, thumby1 + thumblen, thumbcolour, thumbcolour);
+			}
+		}
+#endif
+
 		// Render left/right chevrons and sibling dialog titles
 		layer = &g_Menus[g_MpPlayerNum].layers[g_Menus[g_MpPlayerNum].depth - 1];
 
@@ -3629,6 +3695,21 @@ void func0f0f820c(struct menudialogdef *dialogdef, s32 root)
 	g_MenuData.prevmenudialog = dialogdef;
 }
 
+#ifndef PLATFORM_N64
+static bool menuBackgroundUsesLevel(s32 bg)
+{
+	return (bg == MENUBG_BLUR || bg == MENUBG_CONEALPHA)
+		&& g_Vars.stagenum != STAGE_TITLE && g_Vars.stagenum != STAGE_BOOTPAKMENU
+		&& g_Vars.stagenum != STAGE_CREDITS && g_Vars.stagenum != STAGE_4MBMENU;
+}
+
+bool menuHasLevelBackground(void)
+{
+	return g_MenuData.nextbg != MENUBG_FAILURE
+		&& (menuBackgroundUsesLevel(g_MenuData.bg) || menuBackgroundUsesLevel(g_MenuData.nextbg));
+}
+#endif
+
 void menuSetBackground(s32 bg)
 {
 	// Can only screenshot if there is no background already,
@@ -3645,7 +3726,11 @@ void menuSetBackground(s32 bg)
 		g_MenuData.nextbg = bg;
 	}
 
-	if (screenshot && g_MenuData.bg == 0) {
+	if (screenshot && g_MenuData.bg == 0
+#ifndef PLATFORM_N64
+			&& !menuBackgroundUsesLevel(bg)
+#endif
+			) {
 		g_MenuData.screenshottimer = 1;
 	}
 }
@@ -4768,7 +4853,7 @@ void menuProcessInput(void)
 	// only allow mouse controls for player 1 menus
 	if (menu->playernum == 0) {
 		// ESC always acts as back
-		inputs.back = inputKeyJustPressed(VK_ESCAPE);
+		inputs.back = !modSpawnEditEatsEscape() && inputKeyJustPressed(VK_ESCAPE);
 		if (inputMouseIsEnabled() && !inputMouseIsLocked() && g_MenuMouseControl) {
 			inputs.mouseheld = inputKeyPressed(VK_MOUSE_LEFT);
 			if (!inputs.mouseheld) {
@@ -5309,6 +5394,16 @@ Gfx *menugfxRenderBgFailureAlt(Gfx *gdl);
 Gfx *menuRenderBackgroundLayer1(Gfx *gdl, u8 bg, f32 frac)
 {
 	static u32 bblur = 1;
+
+#ifndef PLATFORM_N64
+	if (menuBackgroundUsesLevel(bg)) {
+		// The desktop menu is composited over the level from this frame.
+		gSPDisplayList(gdl++, var800613a0);
+		gdl = textSetPrimColour(gdl, (u32)(64 * frac));
+		gDPFillRectangle(gdl++, 0, 0, viGetWidth(), viGetHeight());
+		return text0f153838(gdl);
+	}
+#endif
 
 	switch (bg) {
 	case MENUBG_BLUR:

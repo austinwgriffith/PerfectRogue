@@ -4,6 +4,7 @@
  */
 
 #include <stdarg.h>
+#include <string.h>
 #include <stdio.h>
 #include "rd_internal.h"
 
@@ -412,7 +413,7 @@ static void ragdollBlendTick(struct ragdoll *rd, f32 dt)
 		bool (*movecb)(struct model *, struct coord *, struct coord *, f32 *) = a->unk70;
 
 		a->unk70 = NULL;
-		modelTickAnimQuarterSpeed(rd->model, g_Vars.lvupdate240, true);
+		modelTickAnimQuarterSpeed(rd->model, rd->animticks240, true);
 		modelUpdateInfo(rd->model);
 
 		if (rd->model->anim == a) {
@@ -672,7 +673,7 @@ void ragdollDriveJoints(struct ragdoll *rd, f32 dt)
 			rd->powered = false;
 		} else {
 			// Keep the death animation going (no root motion: the physics moves the body)
-			modelTickAnimQuarterSpeed(rd->model, g_Vars.lvupdate240, false);
+			modelTickAnimQuarterSpeed(rd->model, rd->animticks240, false);
 
 			if (ragdollSampleAnimPose(rd, target)) {
 				musclestrength = (1.0f - t) * rd->musclestrength;

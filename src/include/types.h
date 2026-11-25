@@ -953,6 +953,9 @@ struct act_die {
 	/*0x3c*/ f32 elapseextra;
 	/*0x40*/ struct coord extraspeed; // for changing position while airborne (eg. when shot by magnum)
 	/*0x4c*/ s16 drcarollimagedelay;
+#ifndef PLATFORM_N64
+	f32 nextheadshotsprayframe;
+#endif
 };
 
 struct act_dead {
@@ -1127,6 +1130,10 @@ struct act_skjump {
 };
 
 struct chrdata {
+#ifndef PLATFORM_N64
+	u32 spawnreactionstart60;
+	bool spawnreactionplayed;
+#endif
 	/*0x000*/ s16 chrnum;
 	/*0x002*/ s8 accuracyrating;
 	/*0x003*/ s8 speedrating; // 0-100
@@ -1349,6 +1356,15 @@ struct chrdata {
 	s32 lastfootstep240; // MOD: footsteps - g_Vars.lvframe240 of its last footstep (footstepPlay)
 	s32 lastfootcheck240; // MOD: footsteps - g_Vars.lvframe240 of its last normal footstep check
 	s32 lastawake60; // MOD: high framerates - g_Vars.lvframe60 of its last tick that completed a 60th awake (chraTick)
+	u32 deathSerial; // Order in which this character died, for the corpse draw limit.
+#endif
+#ifdef PD_PHYSICS
+	u32 distantcorpseSerial;
+#endif
+#ifndef PLATFORM_N64
+	f32 fallpeak; // MOD: gore - the highest the chr's feet were on this fall (chr.c), if fallpeakset
+	u8 fallpeakset;
+	u32 woundmask; // MOD: gore - a bit per HITPART_* the chr has been shot in (chrDamage()); the corpse pools under those (splat.c)
 #endif
 };
 
@@ -4283,6 +4299,7 @@ struct bgportal {
 	s16 roomnum1;
 	s16 roomnum2;
 	u8 flags;
+	u8 thickness;
 };
 
 struct portalcamcacheitem {
@@ -4431,6 +4448,8 @@ struct explosion {
 	/*0x3cd*/ s8 makescorch;
 	/*0x3ce*/ s8 owner;
 	/*0x3cf*/ u8 numbb;
+	s16 grenadeid; // MOD: Gauntlet - which of the player's grenades made it (0: none)
+	bool explosiveexit; // Explosive Exit applies reduced damage to players
 	/*0x3d0*/ struct coord unk3d0;
 	/*0x3dc*/ struct coord unk3dc;
 	/*0x3e8*/ struct explosionbb bbs[5]; // may be smaller
@@ -5300,6 +5319,10 @@ struct seqinstance {
 	/*0x0fc*/ u8 *data;
 	/*0x100*/ u16 volume;
 	/*0x104*/ s32 tracknum;
+#ifndef PLATFORM_N64
+	// the instrument bank the player was last given (seqAppend())
+	ALBank *bank;
+#endif
 };
 
 struct lasersight {
@@ -5311,6 +5334,7 @@ struct lasersight {
 	struct coord dotpos;
 	struct coord dotrot;
 	u32 unk44;
+	/* Port-only Target Locator dot data, on the extra lasersight slot. */
 };
 
 struct vec3s16 {
@@ -6067,6 +6091,11 @@ struct tex {
 	/*0x0c*/ u32 lutmodeindex : 2;
 	/*0x0c*/ u32 hasloddata : 1;
 	/*0x0c*/ u32 unk0c_03 : 1;
+#ifndef PLATFORM_N64
+	// Which source the texture's pixels came from (modTextureSource()): 0 the
+	// ROM, else a Perfect Random bank head's own copy of a stock texture
+	/*0x0c*/ u32 srcmod : 8;
+#endif
 #ifdef PLATFORM_N64
 	/*0x0c*/ u32 next : 24;
 #else
@@ -6075,7 +6104,11 @@ struct tex {
 };
 
 struct texcacheitem {
+#ifdef PLATFORM_N64
 	s16 texturenum;
+#else
+	s32 texturenum; // TEX_CACHE_KEY(): the number and the source it came from
+#endif
 	u8 widths[7];
 	u8 heights[7];
 };

@@ -1,3 +1,4 @@
+#include <string.h>
 #include <ultra64.h>
 #include "constants.h"
 #include "game/file.h"
@@ -12,6 +13,8 @@
 #include "platform.h"
 #ifndef PLATFORM_N64
 #include "video.h"
+#include "gelevels.h"
+#include "levelgenstage.h"
 #endif
 
 /**
@@ -145,6 +148,13 @@ u16 g_LangFiles[] = {
 u32 langGetLangBankIndexFromStagenum(s32 stagenum)
 {
 	u32 bank;
+
+#ifndef PLATFORM_N64
+	// MOD: GoldenEye levels have no text bank of their own (gelevels.c)
+	if (gelevelsIsStage(stagenum) || levelgenIsStage(stagenum)) {
+		stagenum = STAGE_MP_SKEDAR;
+	}
+#endif
 
 	switch (stagenum) {
 	case STAGE_PELAGIC:       bank = LANGBANK_DAM; break;
@@ -417,12 +427,53 @@ void langClearBank(s32 bank)
  * The language file data consists of a variable-length array of offsets into
  * the file. Not to be confused with pointers.
  */
+#ifndef PLATFORM_N64
+#define LANGBANK_PORT 0x7f // the port's own strings, handed out as text ids (langAddPortText())
+
+static const char *g_LangPortTexts[64];
+static s32 g_LangNumPortTexts;
+
+/**
+ * A text id for a string of the port's own, for anything that wants an id
+ * (an inventory item's name: Perfect Random's boon items). The same string
+ * is given the same id.
+ */
+u16 langAddPortText(const char *text)
+{
+	for (s32 i = 0; i < g_LangNumPortTexts; i++) {
+		if (strcmp(g_LangPortTexts[i], text) == 0) {
+			return (LANGBANK_PORT << 9) | i;
+		}
+	}
+
+	if (g_LangNumPortTexts >= ARRAYCOUNT(g_LangPortTexts)) {
+		return 0;
+	}
+
+	g_LangPortTexts[g_LangNumPortTexts] = text;
+
+	return (LANGBANK_PORT << 9) | g_LangNumPortTexts++;
+}
+#endif
+
 char *langGet(s32 textid)
 {
 	s32 bankindex = textid >> 9;
 	s32 textindex = textid & 0x1ff;
-	uintptr_t *bank = (uintptr_t*)g_LangBanks[bankindex];
+	uintptr_t *bank;
 	uintptr_t addr;
+
+#ifndef PLATFORM_N64
+	if (bankindex == LANGBANK_PORT) {
+		return (char *)(textindex < g_LangNumPortTexts ? g_LangPortTexts[textindex] : "");
+	}
+
+	if (bankindex >= ARRAYCOUNT(g_LangBanks)) {
+		return NULL;
+	}
+#endif
+
+	bank = (uintptr_t*)g_LangBanks[bankindex];
 
 	if (bank && bank[textindex]) {
 		addr = (uintptr_t)bank + bank[textindex];

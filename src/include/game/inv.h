@@ -1,12 +1,13 @@
 #ifndef IN_GAME_INV_H
 #define IN_GAME_INV_H
 #include <ultra64.h>
+#include "constants.h"
 #include "data.h"
 #include "types.h"
 
 extern struct noisesettings invnoisesettings_silent;
 extern struct invaimsettings invaimsettings_default;
-extern struct weapon *g_Weapons[WEAPON_SUICIDEPILL + 1];
+extern struct weapon *g_Weapons[WEAPON_TARGETLOCATOR + 1];
 
 void invReset(void);
 void invInit(s32 numdoubles);
@@ -30,6 +31,7 @@ bool invHasDoubleWeaponIncAllGuns(s32 weapon1, s32 weapon2);
 bool invGiveSingleWeapon(s32 weaponnum);
 bool invGiveDoubleWeapon(s32 weapon1, s32 weapon2);
 void invRemoveItemByNum(s32 weaponnum);
+void invRemoveWeaponsExcept(const s32 *keep, s32 numkeep);
 bool invGiveProp(struct prop *prop);
 void invRemoveProp(struct prop *prop);
 s32 invGiveWeaponsByProp(struct prop *prop);

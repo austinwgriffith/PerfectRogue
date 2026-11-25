@@ -1139,7 +1139,7 @@ void ragdollSyncProps(f32 dt)
 
 		// Sleeping corpses don't need their surroundings refreshed, except
 		// lifts: a lift must already be under a body when it starts moving
-		liftsonly = rd->settled && pdphysRagdollIsAsleep(rd->handle);
+		liftsonly = rd->solid || (rd->settled && pdphysRagdollIsAsleep(rd->handle)); // (MOD: a solid body lies still too)
 		any = true;
 
 		ragdollSyncPropsAround(&rd->prop->pos, rd->prop->rooms, liftsonly, dt, propnums);
@@ -1715,6 +1715,114 @@ static bool rdPointInPiece(const pdphysPiece *piece, const f32 *pos, f32 margin)
 	return false;
 }
 
+/**
+ * MOD: a body must not keep a door from closing. A body in the way is first
+ * given a moment to be shoved clear; then the limb that blocks the door is cut
+ * off; then, if the door is still blocked, the body is cut in half; and if it
+ * still is, the door closes through it (clipping).
+ */
+#define RD_DOORCUT_SHOVE   15  // 60 Hz frames blocked before the limb is cut
+#define RD_DOORCUT_LIMB    20  // frames after the limb is cut before the waist is
+#define RD_DOORCUT_WAIST   30  // frames after the waist is cut before the door clips
+#define RD_DOORCUT_CLIP    240 // frames the door then ignores bodies
+#define RD_DOORCUT_GAP     30  // frames not blocked: a new block
+#define RD_DOORCUT_SLOTS   16
+
+static struct {
+	struct doorobj *door;
+	s32 stage;   // 0 shoving, 1 limb cut, 2 waist cut, 3 clipping
+	s32 stagestart60;
+	s32 last60;
+} g_RdDoorCut[RD_DOORCUT_SLOTS];
+
+static s32 rdDoorCutSlot(struct doorobj *door, bool create)
+{
+	s32 now = RD_FRAMESTAMP();
+	s32 slot = -1;
+	s32 freeslot = -1;
+	s32 i;
+
+	for (i = 0; i < RD_DOORCUT_SLOTS; i++) {
+		if (g_RdDoorCut[i].door && (g_RdDoorCut[i].last60 > now
+				|| now - g_RdDoorCut[i].last60 > (g_RdDoorCut[i].stage >= 3 ? RD_DOORCUT_CLIP : RD_DOORCUT_GAP))) {
+			g_RdDoorCut[i].door = NULL;
+		}
+
+		if (g_RdDoorCut[i].door == door) {
+			slot = i;
+		} else if (g_RdDoorCut[i].door == NULL && freeslot < 0) {
+			freeslot = i;
+		}
+	}
+
+	if (slot < 0 && create && freeslot >= 0) {
+		slot = freeslot;
+		g_RdDoorCut[slot].door = door;
+		g_RdDoorCut[slot].stage = 0;
+		g_RdDoorCut[slot].stagestart60 = now;
+		g_RdDoorCut[slot].last60 = now;
+	}
+
+	return slot;
+}
+
+/** The door is closing through the bodies in it */
+static bool rdDoorClips(struct doorobj *door)
+{
+	s32 slot = rdDoorCutSlot(door, false);
+
+	return slot >= 0 && g_RdDoorCut[slot].stage >= 3;
+}
+
+/** A body (part p) blocks the door this frame. True when it still does. */
+static bool rdDoorBlocked(struct doorobj *door, struct ragdoll *rd, s32 p)
+{
+	const s32 now = RD_FRAMESTAMP();
+	s32 slot = rdDoorCutSlot(door, true);
+	s32 door60 = door->base.prop ? (s32) (door->base.prop - g_Vars.props) : -1;
+
+	if (slot < 0) {
+		return true;
+	}
+
+	g_RdDoorCut[slot].last60 = now;
+
+	switch (g_RdDoorCut[slot].stage) {
+	case 0:
+		if (now - g_RdDoorCut[slot].stagestart60 >= RD_DOORCUT_SHOVE) {
+			// the limb in the way; a body's middle is cut in half instead
+			const s32 cut = p >= 2 ? p : 1;
+			const bool done = ragdollSeverForDoor(rd, cut);
+
+			sysLogPrintf(LOG_NOTE, "RAGDOLL: chr %d in the way of door %d: %s part %d",
+					RD_RDCHRNUM(rd), door60, done ? "cut off" : "could not cut", cut);
+			g_RdDoorCut[slot].stage = cut == 1 ? 2 : 1;
+			g_RdDoorCut[slot].stagestart60 = now;
+		}
+		return true;
+	case 1:
+		if (now - g_RdDoorCut[slot].stagestart60 >= RD_DOORCUT_LIMB) {
+			const bool done = ragdollSeverForDoor(rd, 1);
+
+			sysLogPrintf(LOG_NOTE, "RAGDOLL: chr %d still in the way of door %d: %s in half",
+					RD_RDCHRNUM(rd), door60, done ? "cut" : "could not cut");
+			g_RdDoorCut[slot].stage = 2;
+			g_RdDoorCut[slot].stagestart60 = now;
+		}
+		return true;
+	case 2:
+		if (now - g_RdDoorCut[slot].stagestart60 >= RD_DOORCUT_WAIST) {
+			sysLogPrintf(LOG_NOTE, "RAGDOLL: chr %d still in the way of door %d: it closes through", RD_RDCHRNUM(rd), door60);
+			g_RdDoorCut[slot].stage = 3;
+			g_RdDoorCut[slot].stagestart60 = now;
+			return false;
+		}
+		return true;
+	default:
+		return false;
+	}
+}
+
 s32 ragdollBlocksDoor(struct doorobj *door)
 {
 	static struct propgeo pg;
@@ -1723,6 +1831,10 @@ s32 ragdollBlocksDoor(struct doorobj *door)
 
 	if (!g_RagdollsEnabled || door == NULL || (prop = door->base.prop) == NULL) {
 		return false;
+	}
+
+	if (rdDoorClips(door)) {
+		return false; // it has been given up on: the door closes through it
 	}
 
 	if (!ragdollGetPropGeometry(prop, &pg)) {
@@ -1809,7 +1921,7 @@ s32 ragdollBlocksDoor(struct doorobj *door)
 									q == 0 ? "" : q == 1 ? ", middle" : q == 2 ? ", far end" : ", hand/foot");
 						}
 
-						return true;
+						return rdDoorBlocked(door, rd, p);
 					}
 				}
 			}

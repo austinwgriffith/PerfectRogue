@@ -22,6 +22,7 @@ extern f32 g_RagdollSlopeGrip;
 extern f32 g_RagdollScreamAirTime; // Ragdoll.RagdollScreamAirTime: seconds in the air before a body screams (0 = never)
 // MOD: ragdoll physics - the ragdolls' WAV sounds, mixed into the output by audio.c
 s32 rdWavActive(void);
+void rdWavTick(void);
 void rdWavMix(s16 *front, s16 *rear, u32 frames, s32 dolby);
 extern f32 g_RagdollMuscleStrengthMin; // MOD: ragdoll ranges
 extern f32 g_RagdollMuscleTimeMin;
@@ -108,6 +109,7 @@ void ragdollOnChrDeath(struct chrdata *chr, struct coord *dir, s32 hitpart, stru
 
 // The chr's body is driven by a ragdoll (simulating or settled)
 s32 ragdollIsChrRagdolled(struct chrdata *chr);
+s32 ragdollIsChrBlending(struct chrdata *chr);
 // True while the player holds a body or an object with Use (Use mustn't do its usual things then)
 s32 ragdollIsHolding(void);
 // MOD: ragdoll physics - guards look bodies over (chrAlertOthersOfInjury: guard saw victim die)
@@ -118,6 +120,10 @@ extern unsigned char g_RdExamineBodyAilist[];
 // MOD: bodies as cover - a held body in the way takes a character's shot at the player
 s32 ragdollBodyBlocksShot(struct chrdata *shooter, struct prop *targetprop, struct coord *gunpos,
 		struct coord *aimpos, struct coord *dir, struct gset *gset, struct coord *outhit);
+
+// MOD: gore - where on a ragdolled body a HITPART_* is (the middle of its limb), for the corpse's blood
+// pools (splat.c); 0 if the chr is not a ragdoll
+s32 ragdollGetHitpartPos(struct chrdata *chr, s32 hitpart, struct coord *out);
 
 // The ragdoll has come to rest (chrTickDie then switches to ACT_DEAD)
 s32 ragdollIsChrSettled(struct chrdata *chr);
@@ -142,7 +148,7 @@ void ragdollOnChrShot(struct chrdata *chr, s32 hitpart, struct coord *dir, struc
 s32 ragdollGetRoomGameFloors(s32 roomnum, const f32 **outverts);
 void ragdollShotgunVolleyBegin(void);
 void ragdollShotgunPellet(void);
-void ragdollShotgunPelletHit(struct chrdata *chr, s32 hitpart, struct coord *dir, struct gset *gset);
+void ragdollShotgunPelletHit(struct chrdata *chr, s32 hitpart, struct coord *dir, struct gset *gset, f32 distance);
 void ragdollShotgunVolleyEnd(void);
 // handTickAttack(): around the player's melee attacks, so the Reaper's blades
 // can be told apart from its bullets
@@ -175,6 +181,9 @@ void ragdollOnChrYeet(struct chrdata *chr, struct coord *exppos);
 s32 ragdollOnBikeHitChr(struct chrdata *chr, struct prop *bike, f32 speedx, f32 speedz, f32 recentdist);
 // chrTickDie(): a scripted death animation (Villa snipers, Chicago railing) ended: becomes a ragdoll
 s32 ragdollOnSpecialDieEnd(struct chrdata *chr);
+void ragdollSettleDistantCorpse(struct chrdata *chr);
+s32 ragdollKeepsCorpse(struct chrdata *chr);
+void ragdollOnCorpseSettled(struct chrdata *chr);
 
 // chrRender(), opaque pass: red caps over dismembered joints
 #include <PR/gbi.h>

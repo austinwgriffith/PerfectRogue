@@ -11,6 +11,11 @@ void sndSetSfxVolume(u16 volume);
 void snd0000ea80(u16 volume);
 void sndResetCurMp3(void);
 void sndLoadSfxCtl(void);
+#ifndef PLATFORM_N64
+#define SEQ_EXTRA_BASE 0x200 // seqAppend()'s first number; a sequence table holds fewer
+s32 seqAppend(const u8 *zip, u16 binlen, u16 ziplen, ALBank *bank);
+void seqAppendSetScale(s32 tracknum, s16 scale);
+#endif
 void sndIncrementAges(void);
 ALEnvelope *sndLoadEnvelope(uintptr_t offset, u16 index);
 ALKeyMap *sndLoadKeymap(uintptr_t offset, u16 index);
@@ -42,5 +47,11 @@ void sndTickNosedive(void);
 void sndPlayUfo(s32 seconds);
 void sndStopUfo(void);
 void sndTickUfo(void);
+
+#ifndef PLATFORM_N64
+s32 sndAppendSound(uintptr_t ctloffset);
+uintptr_t sndGetCtlStart(void);
+uintptr_t sndGetTblStart(void);
+#endif
 
 #endif

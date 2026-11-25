@@ -1,0 +1,190 @@
+#ifndef _IN_GEROOM_H
+#define _IN_GEROOM_H
+
+#include <ultra64.h>
+#include "types.h"
+
+/**
+ * GoldenEye's rule for which room somebody is in, on a level converted from it
+ * (modloaderStageIsRemake()). port/src/geroom.c.
+ *
+ * GoldenEye keeps no room for a player or a guard at all: it keeps the **tile**
+ * they stand on, walks the tile links as they move, and the room is the tile's
+ * (bondview2.c's current_tile_ptr_for_portals->room, chrprop.c's
+ * chrpropUpdateRoomList() seeded from prop->stan). Perfect Dark keeps a room
+ * list and changes it only when a move passes *through a portal's polygon*, and
+ * a GoldenEye level's portals were never made to be walked through that way -
+ * they are narrower than the openings they stand in, and the tiles change room
+ * where no portal is. So a player walks past one, stays in the room behind
+ * them, and the rooms ahead are not drawn ("left in the void until you keep
+ * stepping"); their floor is not found either, which is the fall through the
+ * world the earlier fallbacks were for.
+ */
+
+/** Whether the stage takes its rooms from the tile underfoot. */
+s32 geRoomActive(void);
+
+/** Whether a point is past every room of the level by a margin: a projectile out of the level (a converted level wider than Perfect Dark's box). */
+bool geRoomPosPastLevel(struct coord *pos);
+
+/** Whether a converted stage loads the Community Edition's copies of its files (the HD look with the CE on). */
+s32 geRoomCeData(void);
+
+/** Whether the conversion gave a door GoldenEye's own portal and rooms. */
+bool geRoomDoorRoomsGiven(struct doorobj *door);
+
+/** A door's rooms as GoldenEye's setupDoor() sets them (the conversion's). */
+void geRoomDoorGivenRooms(struct prop *prop, struct doorobj *door);
+
+/** The floor geRoomGround() last stood a body on, and the prop it belongs to (NULL: the level's own). */
+struct geo *geRoomGroundGeo(struct prop **prop);
+
+/** A converted object's rooms as GoldenEye counts them at its setup (chrpropUpdateRoomList()). */
+void geRoomObjRooms(struct defaultobj *obj);
+
+/** A converted object GoldenEye cannot walk from its pad to where it meant to set it stays at the pad. */
+void geRoomObjStayUnreached(struct defaultobj *obj, struct coord *padpos, s32 padroom, struct coord *centre);
+
+/** bg.c's sub_GAME_7F0BA2D4(): rooms through open portals whose box meets [min, max]. */
+s32 geRoomPortalsOverBox(struct coord *min, struct coord *max, s32 *rooms, s32 count, s32 maxcount);
+
+/**
+ * A converted mission's door record carries this in its first spare byte
+ * (doorobj's unusedmaybe[0]) when its portalnum is the one GoldenEye's
+ * setupDoor() gives it (geconvert.c's geSoloDoors(), converter 97).
+ */
+#define GE_DOOR_PORTAL_GIVEN 0x67
+
+/**
+ * cdFindGroundInfoAtCyl() asked of the rooms handed in **and** of every room
+ * whose box holds the position: the highest floor below it, whichever room's
+ * tile it is. Any of the out pointers may be NULL, as cdFindGroundInfoAtCyl()'s
+ * may.
+ */
+f32 geRoomGround(struct coord *pos, f32 radius, RoomNum *rooms, u16 *floorcol, u8 *floortype,
+		u16 *floorflags, RoomNum *floorroom, s32 *inlift, struct prop **lift);
+
+/**
+ * Adds to a room list (-1 terminated, at most `maxlen` rooms) every room whose
+ * box meets the body's: `radius` round `pos` in plan, `ymin` to `ymax` over it.
+ * For the collision library, which only ever looks at the rooms it is handed:
+ * a wall is filed under its tile's room, and a body at a room's edge that the
+ * portals have not put in that room walks into the room's walls unseen - and
+ * then stands inside them once it is (Cradle's stair down to the shaft, F3
+ * report 20260926-005903). Which of those walls stand in the way is still
+ * GoldenEye's to say (gestan.h).
+ */
+void geRoomAddNear(struct coord *pos, f32 radius, f32 ymin, f32 ymax, RoomNum *rooms, s32 maxlen);
+
+/**
+ * Ends the props' part of a collision room list (bwalkCdRooms()): the rooms
+ * before it are asked for their walls and their props, the rooms after it, the
+ * ones geRoomAddNear() adds, for their walls alone. roomGetProps() stops at
+ * any room below zero and the collision library's wall walks skip one, so the
+ * list reads as before everywhere else. GoldenEye asks for the props of the
+ * rooms its tile walk crosses and of no others (stanTestVolume()), and a door
+ * filed under a room next door stood in a doorway the cartridge walks through
+ * (Frigate, F3 20261001-145924).
+ */
+#define GEROOM_PROPS_END -2
+
+/**
+ * Whether a background triangle of `roomnum` lets a shot through on a
+ * converted level although it is solid: the one wall the owner has asked to
+ * be shot through (Complex, the end of the dead-end catwalk in room 41 - F3
+ * 20261001-145736). The bullet goes on into room 44 behind it. Only that
+ * wall's triangles, matched by room and place; everything else stops a shot
+ * as it did.
+ */
+bool geRoomTriPassesShots(s32 roomnum, struct coord *p1, struct coord *p2, struct coord *p3);
+
+/**
+ * The room the picture is drawn from, for an eye standing on `ground` in the
+ * tile's room. The tile's room is where GoldenEye starts, and then it follows a
+ * plumb line from the floor under the eye up to the eye across every portal
+ * that is not upright, changing room at each: a player two steps down a
+ * stairwell stands on the stair's tiles with their eye still over the deck the
+ * stairwell is cut in, and the deck is another room's. Without it that room is
+ * reached, if at all, through some doorway far below and drawn in the doorway's
+ * box - the deck round the stairwell goes, and the sky shows through it (Dam's
+ * first tower, F3 report 20260920-220247).
+ *
+ * A floor lying on a floor portal's plane (GoldenEye's are exactly on it; the
+ * conversion's rounding puts ours up to half a unit either side) is taken as
+ * on its own room's side: Egyptian's fountain basin, F3 report 20260925-163132.
+ */
+s32 geRoomCamera(struct coord *eye, f32 ground, s32 room);
+
+/**
+ * The room a cutscene's camera draws from: GoldenEye walks its tiles from the
+ * camera's pad to the camera in plan and takes the room of the tile it ends on,
+ * then carries that up to the camera (geRoomCamera()). `padroom` where the
+ * level has no tile graph or the pad is over no tile.
+ */
+s32 geRoomCutsceneCamera(struct coord *campos, struct coord *padpos, s32 padroom);
+
+/**
+ * A door that owns a portal is drawn in **both** of that portal's rooms.
+ *
+ * A door prop's rooms are found from its own middle (doorInit()), which sits in
+ * the doorway - on the portal's plane, and a hair past it, since GoldenEye's
+ * pad centres the door in the wall's thickness. Perfect Dark's own rooms
+ * overlap there, so both sides answer; a converted level's boxes meet at the
+ * plane and only the far side does. Frigate's door 93 came out as room 23's
+ * alone, so from room 18 - the corridor it faces - the shut door was never
+ * drawn, while its portal stayed shut as a shut door's should: an open doorway
+ * onto the sea, which is the void behind the room that was not reached (F3
+ * report 20260922-054950, "cant see into room but see void through open door").
+ *
+ * Extra rooms only make a prop drawn more often, and the two rooms the portal
+ * names are exactly the two a shut door has to cover.
+ */
+void geRoomDoorPortalRooms(struct prop *prop, s32 portalnum);
+
+/**
+ * Every converted door is also in GoldenEye's rooms either side of it: the
+ * rooms its tile graph reaches fifty units past each face of the leaf from the
+ * pad's tile (geStanDoorSideRooms(), GoldenEye's sub_GAME_7F00324C()). A door
+ * prop's rooms come from its middle, and a converted level's room boxes meet
+ * at the door's plane - so with no portal to name the far side (the Cradle has
+ * none at all) a door was the near room's alone, and a guard coming from the
+ * far room never met it: his line to the next waypoint (chrOpenDoor()) and his
+ * moves ask only the rooms he is in for props, so the door was not opened, and
+ * he walked into the leaf until he crossed into the room it was filed under
+ * and it stopped him, standing inside it (F3 report 20260926-170419, Cradle's
+ * door on pad 155, from room 18). The walk, not the floor under a point past
+ * the leaf: Frigate's doors at the corridor ends stand in rooms behind the
+ * wall the graph does not cross to, and GoldenEye never draws them from the
+ * corridor (F3 20260929-095345). A door lying flat is left alone. `pad` is
+ * the door's own, as setupCreateDoor() unpacked it.
+ */
+void geRoomDoorSideRooms(struct prop *prop, struct pad *pad);
+
+/**
+ * GoldenEye's portal thickness, in world units; 0 for a portal without one.
+ *
+ * A GoldenEye portal record carries a byte Perfect Dark's does not
+ * (controlbytes2): a four bit mantissa in quarters doubled by a four bit
+ * exponent. GoldenEye's walk treats a camera within that distance of the
+ * portal's plane as being in both rooms - the portal is not skipped from either
+ * side and the room beyond gets the whole screen - and grows the portal's box
+ * on the screen by it both ways (bg.c: the side test, the box, and
+ * bgGetPortalScreenBbox()). Its authors set it wherever a plain plane drew
+ * wrongly: 71 of Dam's 194 portals, most of Statue's and Surface's. The
+ * conversion carries it in the record's spare byte, re-coded in world units.
+ * Only to be asked on a remake stage: a stock file's spare byte is nobody's.
+ */
+f32 geRoomPortalThickness(s32 portalnum);
+
+/**
+ * The thicknesses GoldenEye's PAL cartridge gives the portals it changed -
+ * Archives', Control's, Jungle's, Streets' and Silo's, each a room that dropped
+ * out of view in a doorway - put over the US ones the stage's bg file carries,
+ * when GE Plus plays the later cartridges (Mod.GePlusRevisionFixes). The
+ * conversion writes the codes on the stage's line (geconvert.c's
+ * revisionPortals()); a bg file is read afresh at every load, so turning the
+ * setting off needs nothing undone. From bgReset(), once g_BgPortals is set.
+ */
+void geRoomRevisionPortals(s32 stagenum);
+
+#endif
