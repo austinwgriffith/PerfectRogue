@@ -29,7 +29,8 @@ jobs:
         run: |
           mkdir -p package/data
           cp build/pd.x86_64.exe package/
-          cp /mingw64/bin/{SDL2.dll,zlib1.dll,libgcc_s_seh-1.dll,libwinpthread-1.dll} package/
+          export PD_MINGW_BIN="$(cygpath -w "$MINGW_PREFIX/bin")"
+          python tools/package_windows_deps.py package
           cp -r port/data/. package/data/
           cp README.md PLAYER_GUIDE.txt LICENSE package/
           printf 'Place your own Perfect Dark NTSC 1.1 ROM here as pd.ntsc-final.z64.\n' > package/data/PUT_YOUR_ROM_HERE.txt
