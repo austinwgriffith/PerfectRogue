@@ -4233,7 +4233,14 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 	spd8.unk0c = inputs->unk0c;
 	spd8.unk10 = inputs->unk10;
 
-	dialog->unk54++;
+#ifndef PLATFORM_N64
+	if (g_TickRateDiv == 0) {
+		dialog->unk54 += g_Vars.diffframe60;
+	} else
+#endif
+	{
+		dialog->unk54++;
+	}
 	dialog->unk5c += g_Vars.diffframe60;
 	dialog->unk54 += dialog->unk5c / 9;
 	dialog->unk5c %= 9;
@@ -4363,7 +4370,11 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 			}
 		}
 
-		if ((s32)dialog->statefrac == oldfracint) {
+		if ((s32)dialog->statefrac == oldfracint
+#ifndef PLATFORM_N64
+				&& (g_TickRateDiv != 0 || g_Vars.diffframe60 > 0)
+#endif
+				) {
 			dialog->statefrac = oldfracint + 1.0f;
 		}
 
@@ -4473,7 +4484,11 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 			dialog->x = newx;
 
-			if (dialog->x != dialog->dstx && dialog->x == oldx) {
+			if (dialog->x != dialog->dstx && dialog->x == oldx
+#ifndef PLATFORM_N64
+					&& (g_TickRateDiv != 0 || g_Vars.diffframe60 > 0)
+#endif
+					) {
 				if (dialog->x < dialog->dstx) {
 					dialog->x++;
 				} else {
@@ -4497,7 +4512,11 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 			dialog->y = newy;
 
-			if (dialog->y != dialog->dsty && dialog->y == oldy) {
+			if (dialog->y != dialog->dsty && dialog->y == oldy
+#ifndef PLATFORM_N64
+					&& (g_TickRateDiv != 0 || g_Vars.diffframe60 > 0)
+#endif
+					) {
 				if (dialog->y < dialog->dsty) {
 					dialog->y++;
 				} else {
@@ -4522,7 +4541,11 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 		dialog->width = newwidth;
 
-		if (dialog->width != dialog->dstwidth && dialog->width == oldwidth) {
+		if (dialog->width != dialog->dstwidth && dialog->width == oldwidth
+#ifndef PLATFORM_N64
+				&& (g_TickRateDiv != 0 || g_Vars.diffframe60 > 0)
+#endif
+				) {
 			if (dialog->width < dialog->dstwidth) {
 				dialog->width++;
 			} else {
@@ -4547,7 +4570,11 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 		dialog->height = newheight;
 
-		if (dialog->height != dialog->dstheight && dialog->height == oldheight) {
+		if (dialog->height != dialog->dstheight && dialog->height == oldheight
+#ifndef PLATFORM_N64
+				&& (g_TickRateDiv != 0 || g_Vars.diffframe60 > 0)
+#endif
+				) {
 			if (dialog->height < dialog->dstheight) {
 				dialog->height++;
 			} else {

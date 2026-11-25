@@ -1,0 +1,123 @@
+name: Perfect Rogue release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git make zip mingw-w64-x86_64-toolchain mingw-w64-x86_64-python
+            mingw-w64-x86_64-SDL2 mingw-w64-x86_64-zlib mingw-w64-x86_64-cmake
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -G 'Unix Makefiles' -B build -DPD_SHIP_DIR:PATH= .
+          cmake --build build -j 4
+      - name: Package
+        run: |
+          mkdir -p package/data
+          cp build/pd.x86_64.exe package/
+          cp /mingw64/bin/{SDL2.dll,zlib1.dll,libgcc_s_seh-1.dll,libwinpthread-1.dll} package/
+          cp -r port/data/. package/data/
+          cp README.md PLAYER_GUIDE.txt LICENSE package/
+          printf 'Place your own Perfect Dark NTSC 1.1 ROM here as pd.ntsc-final.z64.\n' > package/data/PUT_YOUR_ROM_HERE.txt
+          (cd package && zip -qr ../PerfectRogue-Windows-x86_64.zip .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PerfectRogue-Windows-x86_64
+          path: PerfectRogue-Windows-x86_64.zip
+
+  unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform: Linux-x86_64
+            arch: x86_64
+          - runner: macos-15-intel
+            platform: macOS-x86_64
+            arch: x86_64
+          - runner: macos-15
+            platform: macOS-arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3 libsdl2-dev zlib1g-dev libgl1-mesa-dev
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install zlib
+          curl -fsSL --retry 3 https://www.libsdl.org/release/SDL2-2.30.9.dmg -o SDL2.dmg
+          hdiutil attach SDL2.dmg
+          sudo cp -R /Volumes/SDL2/SDL2.framework /Library/Frameworks/
+      - name: Build Linux
+        if: runner.os == 'Linux'
+        run: |
+          cmake -G 'Unix Makefiles' -B build -DPD_SHIP_DIR:PATH= .
+          cmake --build build -j 4
+      - name: Build macOS
+        if: runner.os == 'macOS'
+        run: |
+          cmake -G 'Unix Makefiles' -B build -DPD_SHIP_DIR:PATH= -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} .
+          cmake --build build -j 4
+      - name: Package
+        run: |
+          mkdir -p package/data
+          cp build/pd.${{ matrix.arch }} package/
+          cp -r port/data/. package/data/
+          cp README.md PLAYER_GUIDE.txt LICENSE package/
+          printf 'Place your own Perfect Dark NTSC 1.1 ROM here as pd.ntsc-final.z64.\n' > package/data/PUT_YOUR_ROM_HERE.txt
+          if [ "$RUNNER_OS" = macOS ]; then
+            cp -R /Library/Frameworks/SDL2.framework package/
+            sdl_path=$(otool -L "package/pd.${{ matrix.arch }}" | awk '/SDL2.framework/ {print $1; exit}')
+            test -n "$sdl_path"
+            install_name_tool -change "$sdl_path" '@executable_path/SDL2.framework/Versions/A/SDL2' "package/pd.${{ matrix.arch }}"
+            codesign --force --sign - "package/pd.${{ matrix.arch }}"
+          fi
+          tar -czf PerfectRogue-${{ matrix.platform }}.tar.gz -C package .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PerfectRogue-${{ matrix.platform }}
+          path: PerfectRogue-${{ matrix.platform }}.tar.gz
+
+  publish:
+    needs: [windows, unix]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create release archives
+        run: |
+          mkdir releases
+          find artifacts -type f -exec cp {} releases/ \;
+          (cd releases && sha256sum * > SHA256SUMS.txt)
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Perfect Rogue build ${{ github.run_number }}
+          body: |
+            Windows, Linux, and macOS builds of Perfect Rogue.
+
+            Place your own Perfect Dark NTSC 1.1 ROM in the data folder as `pd.ntsc-final.z64`. GoldenEye content requires a compatible GoldenEye 007 ROM in the same folder.
+          files: releases/*

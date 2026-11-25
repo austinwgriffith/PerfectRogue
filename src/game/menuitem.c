@@ -733,7 +733,11 @@ bool menuitemListTick(struct menuitem *item, struct menuinputs *inputs, u32 tick
 
 		data->list.curoffsety = f0;
 
-		if (data->list.curoffsety != data->list.targetoffsety && prev == data->list.curoffsety) {
+		if (data->list.curoffsety != data->list.targetoffsety && prev == data->list.curoffsety
+#ifndef PLATFORM_N64
+				&& (g_TickRateDiv != 0 || g_Vars.diffframe60 > 0)
+#endif
+				) {
 			if (data->list.curoffsety < data->list.targetoffsety) {
 				data->list.curoffsety++;
 			} else {

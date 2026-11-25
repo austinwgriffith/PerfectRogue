@@ -81,7 +81,11 @@ void menuTick(void)
 	for (i = 0; i < ARRAYCOUNT(g_Menus); i++) {
 		if (i);
 
-		if (g_Menus[i].openinhibit > 0) {
+		if (g_Menus[i].openinhibit > 0
+#ifndef PLATFORM_N64
+				&& (g_TickRateDiv != 0 || g_Vars.diffframe60 > 0)
+#endif
+				) {
 			g_Menus[i].openinhibit--;
 		}
 
@@ -114,7 +118,13 @@ void menuTick(void)
 
 		if (g_MenuData.unk66f > bVar12 || !bVar11) {
 			func0f0f3220(g_MenuData.unk66e - 1);
-		} else {
+		} else if (
+#ifndef PLATFORM_N64
+				g_TickRateDiv != 0 || g_Vars.diffframe60 > 0
+#else
+				true
+#endif
+				) {
 			g_MenuData.unk66f++;
 		}
 	}
