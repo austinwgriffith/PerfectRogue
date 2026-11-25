@@ -1,10 +1,8 @@
 # Perfect Rogue
 
-Perfect Rogue adds randomized missions, enemy encounters and a Gauntlet mode to the Perfect Dark PC port, alongside ragdoll physics and other gameplay improvements. GoldenEye levels are available when a compatible GoldenEye ROM is supplied.
+Perfect Rogue adds a brand new roguelike mode to Perfect Dark.  Face off against Solo Mission guards with reworked AI in randomly generated dynamic missions with special events, AI allies, and shifting objectives.
 
-To play, place your own Perfect Dark NTSC 1.1 ROM in `data/pd.ntsc-final.z64` and run the game. For GoldenEye content, place your own GoldenEye 007 (USA) ROM in the `data` folder. The game converts its GoldenEye assets locally.
-
-For build requirements and instructions, see [BUILDING.md](BUILDING.md). The repository's manual GitHub Actions workflow builds downloadable packages for Windows and Linux.
+Perfect Rogue is more than just the missions.  Try out the improved shotgun, quick throw grenades, and a bevy of other new features and tweaks that makes Perfect Dark play better than it ever has.
 
 <p align="center">
   <img src="images/Carrington_Evolved_Logo.png" width="64%"
