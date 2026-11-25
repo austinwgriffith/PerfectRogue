@@ -1,0 +1,4 @@
+PD Plus HD Textures is stored in N64 row order, like every pack built for an
+emulator or the VR fork. This file is what tells the loader not to
+turn it over. Written by Community Packs; deleting it puts every
+texture in the game upside down.

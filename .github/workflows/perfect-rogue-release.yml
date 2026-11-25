@@ -32,6 +32,7 @@ jobs:
           export PD_MINGW_BIN="$(cygpath -w "$MINGW_PREFIX/bin")"
           python tools/package_windows_deps.py package
           cp -r port/data/. package/data/
+          cp -r texture-packs package/
           cp README.md PLAYER_GUIDE.txt LICENSE package/
           printf 'Place your own Perfect Dark NTSC 1.1 ROM here as pd.ntsc-final.z64.\n' > package/data/PUT_YOUR_ROM_HERE.txt
           (cd package && zip -qr ../PerfectRogue-Windows-x86_64.zip .)
@@ -84,6 +85,7 @@ jobs:
           mkdir -p package/data
           cp build/pd.${{ matrix.arch }} package/
           cp -r port/data/. package/data/
+          cp -r texture-packs package/
           cp README.md PLAYER_GUIDE.txt LICENSE package/
           printf 'Place your own Perfect Dark NTSC 1.1 ROM here as pd.ntsc-final.z64.\n' > package/data/PUT_YOUR_ROM_HERE.txt
           if [ "$RUNNER_OS" = macOS ]; then

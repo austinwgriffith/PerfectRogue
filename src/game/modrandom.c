@@ -6298,6 +6298,23 @@ static void modRandomTacticsProneHold(struct chrdata *chr, struct prop *playerpr
 	// putting it down by hand fights the fall. Wait for the landing.
 	if (g_ModRandomProneMode[id] == 0
 			&& (chr->fallspeed.y != 0.0f || chr->fallpeakset || chr->manground - chr->ground > 3.0f)) {
+		static s32 waitsince[1024];
+
+		if (waitsince[id] == 0) {
+			waitsince[id] = g_Vars.lvframe60 ? g_Vars.lvframe60 : 1;
+		}
+
+		// A landing takes about a second. A chr that is still "not down" after
+		// two seconds is not falling: it fights standing, as a defender, and
+		// does not stand idle for the rest of the mission.
+		if (g_Vars.lvframe60 - waitsince[id] < TICKS(120)) {
+			return;
+		}
+
+		waitsince[id] = 0;
+		modRandomProneLog("never landed, stays standing", chr, chr->manground - chr->ground);
+		g_ModRandomRole[id] = g_ModRandomHold[id] ? TACTICS_HOLD_POSITION : TACTICS_DEFENDER;
+		g_ModRandomDefCover[id] = 1;
 		return;
 	}
 
@@ -6330,7 +6347,23 @@ static void modRandomTacticsProneHold(struct chrdata *chr, struct prop *playerpr
 		return;
 	}
 
-	if (g_ModRandomProneMode[id] != mode || chr->actiontype != ACT_ATTACK) {
+	{
+		static s32 lastlog[1024];
+		static s32 logged;
+
+		if (logged < 60 && g_Vars.lvframe60 - lastlog[id] > TICKS(600)) {
+			lastlog[id] = g_Vars.lvframe60;
+			logged++;
+			sysLogPrintf(LOG_NOTE, "prone: state: chr %d mode %d seen %d action %d anim %d shots %d/%d flags 0x%x firing 0x%x",
+					chr->chrnum, g_ModRandomProneMode[id], seen, chr->actiontype, (s32)modelGetAnimNum(chr->model),
+					chr->act_attack.numshots, chr->act_attack.maxshots, chr->act_attack.flags,
+					chr->hidden & (CHRHFLAG_FIRINGLEFT | CHRHFLAG_FIRINGRIGHT));
+		}
+	}
+
+	if (g_ModRandomProneMode[id] != mode || chr->actiontype != ACT_ATTACK
+			|| (seen && modelGetAnimNum(chr->model) == ANIM_SNIPING_ONGROUND
+				&& chr->act_attack.numshots >= chr->act_attack.maxshots)) {
 		// The target attack path accounts for the gun's sideways offset in
 		// the prone pose and uses the normal player hit calculation.
 		chr->target = playerprop - g_Vars.props;

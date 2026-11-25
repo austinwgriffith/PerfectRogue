@@ -1409,8 +1409,11 @@ s32 modCareerKillObjectives(void)
 	}
 
 	const s32 length = modCareerLength();
-	// Unlimited reaches five objectives on the same schedule as the default run.
-	const s32 last = (length == MODCAREER_UNLIMITED ? MODCAREER_DEFAULTMISSIONS : length) - 1;
+	// Unlimited: two objectives, one more every two missions, up to five.
+	if (length == MODCAREER_UNLIMITED) {
+		return 2 + MIN(g_ModCareerMission / 2, 3);
+	}
+	const s32 last = length - 1;
 	return 2 + (3 * MIN(g_ModCareerMission, last) + last / 2) / last;
 }
 

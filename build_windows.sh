@@ -27,6 +27,11 @@ cmake --build "$BUILD_DIR" -j"$(nproc)" -- -O
 mkdir -p "$OUT_DIR/data"
 cp "$BUILD_DIR/pd.x86_64.exe" "$OUT_DIR/"
 cp /mingw64/bin/{SDL2.dll,zlib1.dll,libwinpthread-1.dll,libgcc_s_seh-1.dll} "$OUT_DIR/"
+if [ -d texture-packs ]; then
+  mkdir -p "$OUT_DIR/texture-packs"
+  cp -r texture-packs/. "$OUT_DIR/texture-packs/" # HD text font pictures
+fi
+
 if [ -d port/data ]; then
   cp -r port/data/. "$OUT_DIR/data/" # the game's extra data (data/sounds/: the ragdolls' sounds)
 fi

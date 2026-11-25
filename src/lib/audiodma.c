@@ -27,6 +27,9 @@ struct admastate {
 
 s32 g_AdmaNumItemsThisFrame = 0;
 
+// MOD: where a DMA that has no buffer to land in points the mixer instead
+static u8 g_AdmaSilence[ADMA_ITEM_SIZE + 16];
+
 struct admastate g_AdmaState;
 struct admaitem g_AdmaItems[ADMA_MAX_ITEMS];
 OSIoMesg g_AdmaIoMsgs[ADMA_MAX_ITEMS];
@@ -93,8 +96,14 @@ uintptr_t admaExec(uintptr_t offset, s32 len, void *state)
 	// If there are no free slots, the N64 SDK's demo program instructs you to
 	// "send back a bogus pointer, it's better than nothing".
 	// @bug: This can make incorrect audio play when the DMA queue is full.
-	if (item == NULL) {
-		return osVirtualToPhysical(g_AdmaState.firstused);
+	// MOD: also when the free item has no buffer (ptr NULL): the port's DMA is a
+	// memcpy, and a NULL destination crashed the audio thread (access violation
+	// in admaExec 20 minutes into a long run).
+	if (item == NULL || item->ptr == NULL) {
+		if (g_AdmaState.firstused && g_AdmaState.firstused->ptr) {
+			return osVirtualToPhysical(g_AdmaState.firstused->ptr);
+		}
+		return osVirtualToPhysical(g_AdmaSilence);
 	}
 
 	g_AdmaState.firstfree = (struct admaitem *) item->node.next;
@@ -127,7 +136,7 @@ uintptr_t admaExec(uintptr_t offset, s32 len, void *state)
 
 	osInvalDCache((void *) PHYS_TO_K0(offset), ADMA_ITEM_SIZE);
 
-	osPiStartDma(&g_AdmaIoMsgs[g_AdmaNumItemsThisFrame++], OS_MESG_PRI_HIGH, OS_READ, offset, foundbuffer, ADMA_ITEM_SIZE, &g_AdmaMesgQueue);
+	osPiStartDma(&g_AdmaIoMsgs[g_AdmaNumItemsThisFrame++ % ADMA_MAX_ITEMS], OS_MESG_PRI_HIGH, OS_READ, offset, foundbuffer, ADMA_ITEM_SIZE, &g_AdmaMesgQueue);
 
 	return osVirtualToPhysical(foundbuffer) + delta;
 }
@@ -153,7 +162,10 @@ void *admaNew(struct admastate **state)
 		g_AdmaState.firstfree = g_AdmaItems;
 
 		for (i = 0; i < max - 1; i++) {
-			alLink(&g_AdmaItems[i + 1].node, &g_AdmaItems[i].node);
+			// The last slot has no buffer; never put it on the free list.
+			if (i + 1 < max - 1) {
+				alLink(&g_AdmaItems[i + 1].node, &g_AdmaItems[i].node);
+			}
 			g_AdmaItems[i].ptr = alHeapAlloc(&g_SndHeap, 1, ADMA_ITEM_SIZE);
 		}
 
