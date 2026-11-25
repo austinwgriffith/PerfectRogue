@@ -94,7 +94,7 @@ static struct guardvoicepack g_GuardVoicePacks[GUARDVOICE_NUM_SEXES];
 static char g_GuardVoiceChoices[GUARDVOICE_NUM_SEXES][GUARDVOICE_NAME_SIZE];
 static char (*g_GuardVoiceCustomNames)[GUARDVOICE_NAME_SIZE];
 static s32 g_GuardVoiceCustomCount;
-static s32 g_GuardVoiceLegacyCici = 1;
+static s32 g_GuardVoiceLegacyCici = 0;
 static s32 g_GuardChatterNext60;
 static struct rdwav g_RdScream;
 static struct rdwavvoice g_RdWavVoices[RD_WAV_MAXVOICES];
