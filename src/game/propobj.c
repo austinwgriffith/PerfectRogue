@@ -19443,7 +19443,9 @@ bool chrEquipWeapon(struct weaponobj *weapon, struct chrdata *chr)
 	u32 stack1;
 	s32 handnum = (weapon->base.flags & OBJFLAG_WEAPON_LEFTHANDED) ? HAND_LEFT : HAND_RIGHT;
 	u32 stack2[2];
+	// A grenade or N-Bomb in a chr's hand is what it throws, not a gun it carries: always allowed
 	if (chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER
+			&& weapon->weaponnum != WEAPON_GRENADE && weapon->weaponnum != WEAPON_NBOMB
 			&& !modRandomNpcWeaponAllowed(chr->chrnum, weapon->weaponnum)) {
 		return false;
 	}
@@ -19856,8 +19858,11 @@ struct prop *weaponCreateForChr(struct chrdata *chr, s32 modelnum, s32 weaponnum
 	struct prop *prop;
 	struct model *model;
 #ifndef PLATFORM_N64
+	// A grenade (or N-Bomb) given to a chr is the thing it is about to throw, not a gun
+	// it carries: it must stay a grenade, or the chr throws its gun instead.
+	const bool throwitem = weaponnum == WEAPON_GRENADE || weaponnum == WEAPON_NBOMB;
 	const bool allowNpcWeaponOverride = chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER
-		&& !(chr->hidden2 & CHRH2FLAG_ASSASSINCLOAK);
+		&& !(chr->hidden2 & CHRH2FLAG_ASSASSINCLOAK) && !throwitem;
 	if (allowNpcWeaponOverride && !(flags & OBJFLAG_WEAPON_LEFTHANDED)
 			&& modRandomNpcAssaultRifle(chr->chrnum, &weaponnum, &modelnum)) {
 		modeldef = NULL;
@@ -19869,7 +19874,7 @@ struct prop *weaponCreateForChr(struct chrdata *chr, s32 modelnum, s32 weaponnum
 	} else
 #endif
 
-	if (chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER
+	if (chr && chr->prop && chr->prop->type != PROPTYPE_PLAYER && !throwitem
 			&& !modRandomNpcWeaponAllowed(chr->chrnum, weaponnum)) {
 		modRandomFallbackGun(chr->chrnum, &weaponnum, &modelnum);
 		modeldef = NULL;

@@ -5218,6 +5218,10 @@ static bool modRandomClimaxPickZone(s32 attempt, const s32 *failedPads)
 		s32 room, j;
 
 		for (j = 0; j < attempt && failedPads[j] != padnum; j++) {}
+		// Bunker 1 (stage 0x54): pad 152 sits where the computer cannot be reached
+		if (g_Vars.stagenum == 0x54 && padnum == 152) {
+			continue;
+		}
 		if (j < attempt || !modRandomPadCanSpawn(padnum)) {
 			continue;
 		}
@@ -5997,7 +6001,7 @@ static bool modRandomTacticsEligible(struct chrdata *chr, struct chrdata *own)
 	bool punishment = (chr->hidden2 & CHRH2FLAG_PUNISHMENT) != 0;
 	bool warzoneally = modRandomTacticsWarzoneAlly(chr);
 
-	if (chr->chrnum < 0 || chr == own || !chr->prop || !chr->model
+	if (chr->chrnum < 0 || chr == own || !chr->prop || !chr->model || (chr->hidden2 & CHRH2FLAG_BLONDREVENGE)
 			|| (!punishment && !warzoneally && (chr->race != RACE_HUMAN || (chr->team & (TEAM_ALLY | TEAM_NONCOMBAT | TEAM_00 | 0x6c))))
 			|| chr->prop->type != PROPTYPE_CHR || chrIsDead(chr) || modRandomChrKnockedOut(chr)
 			|| (chr->chrflags & CHRCFLAG_HIDDEN) || ((chr->hidden2 & CHRH2FLAG_WARZONE) && !warzoneally)
@@ -6144,7 +6148,7 @@ static bool modRandomProneSettle(struct chrdata *chr)
 		return false;
 	}
 
-	if (prop->pos.y - ground > 3.0f && prop->pos.y - ground < 300.0f) {
+	if (prop->pos.y - ground > 3.0f && prop->pos.y - ground < 12.0f) {
 		const s32 slot = chr->chrnum & 255;
 
 		// A guard put down again and again is on a floor this probe does not
@@ -6169,7 +6173,9 @@ static bool modRandomProneSettle(struct chrdata *chr)
 		chr->ground = ground;
 		chr->manground = ground;
 		chr->sumground = ground * (PAL ? 8.4175090789795f : 9.999998f);
-	} else if (prop->pos.y - ground >= 300.0f || ground - prop->pos.y > 3.0f) {
+	} else if (prop->pos.y - ground >= 12.0f || ground - prop->pos.y > 3.0f) {
+		// (a guard more than a step off the probed floor is on a slope or stair
+		// this probe misreads: putting it down would teleport it)
 		// the floor found is nowhere near the guard (it stands on something this
 		// probe does not see, or the floor under it moved): not a pose to hold
 		modRandomProneLog("prone chr far from the floor found", chr, prop->pos.y - ground);
@@ -6208,6 +6214,9 @@ static bool modRandomProneFlat(struct chrdata *chr)
 	base = cdFindGroundInfoAtCyl(&query, 15.0f, prop->rooms, NULL, NULL, NULL, &floorroom, NULL, NULL);
 
 	if (floorroom < 0 || base < MODRANDOM_NOGROUND) return false;
+
+	// not on the floor this probe finds (a slope, stair or ramp it is walking down)
+	if (prop->pos.y - base > 6.0f || base - prop->pos.y > 6.0f) return false;
 
 	for (i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
 		f32 ground;
@@ -6332,6 +6341,13 @@ static void modRandomTacticsProneHold(struct chrdata *chr, struct prop *playerpr
 	}
 
 	if (g_ModRandomProneMode[id] == 0 && off > MODRANDOM_PRONE_LIE_CONE) {
+		return;
+	}
+
+	if (g_ModRandomProneMode[id] == 0
+			&& (chr->actiontype == ACT_GOPOS || chr->actiontype == ACT_RUNPOS || chr->actiontype == ACT_PATROL)) {
+		// lying down while still walking slides it down a slope mid-pose: halt first
+		chrTryStop(chr);
 		return;
 	}
 
@@ -8178,6 +8194,44 @@ static bool modRandomSpawnMrBlond(void)
 	return false;
 }
 
+/**
+ * Mr Blonde's Revenge: he fires his rocket launcher from far away. He stands
+ * and shoots while he can see the player from beyond rocket arm's length, and
+ * runs at the player otherwise.
+ */
+static void modRandomTickBlond(void)
+{
+	s32 i;
+
+	if (!g_Vars.bond || !g_Vars.bond->prop || g_Vars.lvframe60 % TICKS(15) != 0) {
+		return;
+	}
+
+	for (i = 0; i < g_NumChrSlots; i++) {
+		struct chrdata *chr = &g_ChrSlots[i];
+		f32 dist;
+		bool inrange;
+
+		if (chr->chrnum < 0 || !chr->prop || !chr->model || !(chr->hidden2 & CHRH2FLAG_BLONDREVENGE)
+				|| chrIsDead(chr) || chr->actiontype == ACT_DEAD || chr->actiontype == ACT_DIE) {
+			continue;
+		}
+
+		chr->target = g_Vars.bond->prop - g_Vars.props;
+		dist = chrGetDistanceToTarget(chr);
+		inrange = dist > 450.0f && dist < 9000.0f && chrHasLosToTarget(chr);
+
+		if (inrange) {
+			if (chr->actiontype != ACT_ATTACK) {
+				chrTryAttackStand(chr, ATTACKFLAG_AIMATBOND, 0);
+			}
+		} else if (chr->actiontype == ACT_ATTACK) {
+			chrStop(chr);
+			chrGoToProp(chr, g_Vars.bond->prop, GOPOSFLAG_RUN);
+		}
+	}
+}
+
 static bool modRandomWarzoneWaypointOk(const struct waypoint *waypoint)
 {
 	s32 padnum = waypoint->padnum;
@@ -8606,6 +8660,10 @@ static void modRandomTickNewEvents(void)
 
 	if (g_ModRandomWarzone.active && g_Vars.lvupdate60 > 0) {
 		modRandomTickWarzone();
+	}
+
+	if (g_Vars.lvupdate60 > 0) {
+		modRandomTickBlond();
 	}
 
 	if (g_ModRandomEventKind == MODEVENT_BLOND && g_Vars.lvframe60 >= g_ModRandomEventNext60) {

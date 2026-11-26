@@ -30,6 +30,7 @@
 #include "lib/collision.h"
 #include "lib/vi.h"
 #include "lib/main.h"
+#include "game/modrandom.h"
 #include "lib/rng.h"
 #include "lib/mtx.h"
 #include "lib/anim.h"
@@ -1055,7 +1056,7 @@ void explosionInflictDamage(struct prop *expprop)
 						ownerprop = g_Vars.anti->prop;
 					}
 
-					if (exp->explosiveexit && prop->type == PROPTYPE_PLAYER) {
+					if (prop->type == PROPTYPE_PLAYER && (exp->explosiveexit || modRandomIsOn())) { // MOD: the player halves every blast's damage
 						minfrac *= 0.5f;
 					}
 					modCareerGrenadeSource(exp->grenadeid);

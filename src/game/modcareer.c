@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "prcompat.h"
 #include "bss.h"
+#include "game/game_0b0fd0.h"
 #include "game/modcareer.h"
 #include "game/chraction.h"
 #include "game/hudmsg.h"
@@ -515,6 +516,13 @@ static bool modCareerBoonsLeft(void)
 	return true; // every mission offers all of them again
 }
 
+// Boon pool "achievement" codes of the three always-offered starting boons
+// (negative: not unlocked by an achievement; -1 is the old "always").
+#define MODCAREER_BOON_GRENADES  -5
+#define MODCAREER_BOON_RIFLEAMMO -6
+#define MODCAREER_BOON_AKIMBO    -7
+#define MODCAREER_BOON_SHOTGUN   -9
+
 struct modcareerboon {
 	s32 weaponnum; // 0 for the shield, which is not an item
 	s32 ammotype;  // 0 for an item with no ammunition
@@ -524,8 +532,10 @@ struct modcareerboon {
 };
 
 static const struct modcareerboon g_ModCareerBoonPool[] = {
-	{ WEAPON_LAPTOPGUN,        AMMOTYPE_SMG,     100, "Laptop Gun",  -1 },
-	{ WEAPON_SHOTGUN,          AMMOTYPE_SHOTGUN, 20,  "Super Shotgun", -1 },
+	{ WEAPON_GRENADE,          0,                0,   "Extra Grenades",       MODCAREER_BOON_GRENADES },  // +2 grenades
+	{ WEAPON_AR34,             AMMOTYPE_RIFLE,   150, "Rifle Ammo Bag (150)", MODCAREER_BOON_RIFLEAMMO }, // +150 rifle rounds
+	{ WEAPON_FALCON2,          0,                0,   "Akimbo Pistol",        MODCAREER_BOON_AKIMBO },    // the starting pistol, in both hands
+	{ WEAPON_SHOTGUN,           0,                0,   "Super Shotgun",       MODCAREER_BOON_SHOTGUN },   // with its ammunition full
 	{ WEAPON_PRESIDENTSCANNER, 0,                0,   "Arm The Civs", ACH_CIVS },      // see modrandom.c
 	{ WEAPON_TESTER,           0,                0,   "Friend Phone", ACH_BUDDY },     // see modrandom.c
 	{ WEAPON_PSYCHOSISGUN,     AMMOTYPE_PSYCHOSIS, 24, "Psychosis Gun", ACH_SURRENDER }, // 24 rounds
@@ -533,7 +543,7 @@ static const struct modcareerboon g_ModCareerBoonPool[] = {
 	{ WEAPON_DISGUISE41,       0,                0,   "Skedar Swarm", -2 },
 	{ WEAPON_CLOAKINGDEVICE, AMMOTYPE_CLOAK, 30, "Cloaking Device", -3 },
 	{ WEAPON_TIMEDMINE,      0,                0,   "Mine Layer",  -4 }, // 3 of each mine; earned by 4 kills with one grenade
-	{ WEAPON_DEVASTATOR,     AMMOTYPE_DEVASTATOR, 16, "Devastator", -5 }, // 16 rounds; earned by killing Mr Blonde in his revenge
+	{ WEAPON_DEVASTATOR,     AMMOTYPE_DEVASTATOR, 16, "Devastator", -8 }, // 16 rounds; earned by killing Mr Blonde in his revenge
 };
 
 static s32 g_ModCareerNumOffers;
@@ -672,7 +682,7 @@ static void modCareerRollOffers(void)
 		if (boon->achievement == -2 && ((boon->weaponnum == WEAPON_DISGUISE40 && !(g_ModCareerAlienReward & 1))
 				|| (boon->weaponnum == WEAPON_DISGUISE41 && !(g_ModCareerAlienReward & 2)))) continue;
 
-		if (boon->achievement == -5 && !g_ModCareerBlondReward) continue;
+		if (boon->achievement == -8 && !g_ModCareerBlondReward) continue;
 
 		if (boon->achievement == -3 && !g_ModCareerCloakReward) continue;
 
@@ -680,7 +690,7 @@ static void modCareerRollOffers(void)
 
 		g_ModCareerOffers[g_ModCareerNumOffers] = i;
 
-		if (boon->ammotype && boon->quantity < 100 && boon->weaponnum != WEAPON_SHOTGUN) {
+		if (boon->ammotype && boon->quantity < 100) {
 			snprintf(g_ModCareerOfferLabels[g_ModCareerNumOffers], sizeof(g_ModCareerOfferLabels[0]), "%s (%d)",
 					boon->name, boon->quantity);
 		} else {
@@ -868,6 +878,37 @@ void modCareerTick(void)
 			const f32 frac = playerGetShieldFrac() + boon->quantity * 0.01f;
 
 			playerSetShieldFrac(frac > 1.0f ? 1.0f : frac);
+		} else if (boon->achievement == MODCAREER_BOON_GRENADES) {
+			// Extra Grenades: 2 more than the starting 3 (up to the most that can be held)
+			const s32 ammo = bgunGetAmmoTypeForWeapon(WEAPON_GRENADE, FUNC_PRIMARY);
+			const s32 cap = bgunGetCapacityByAmmotype(ammo);
+			const s32 held = bgunGetAmmoCount(ammo) + 2;
+
+			invGiveSingleWeapon(WEAPON_GRENADE);
+			bgunSetAmmoQuantity(ammo, held > cap ? cap : held);
+		} else if (boon->achievement == MODCAREER_BOON_RIFLEAMMO) {
+			// Rifle Ammo Bag: 150 rounds of rifle ammunition (AR34, K7 Avenger, Dragon...)
+			const s32 cap = bgunGetCapacityByAmmotype(AMMOTYPE_RIFLE);
+			const s32 held = bgunGetAmmoCount(AMMOTYPE_RIFLE) + boon->quantity;
+
+			bgunSetAmmoQuantity(AMMOTYPE_RIFLE, held > cap ? cap : held);
+		} else if (boon->achievement == MODCAREER_BOON_SHOTGUN) {
+			// Super Shotgun: the gun, and as much ammunition as can be held
+			const s32 ammo = bgunGetAmmoTypeForWeapon(WEAPON_SHOTGUN, FUNC_PRIMARY);
+
+			invGiveSingleWeapon(WEAPON_SHOTGUN);
+			bgunSetAmmoQuantity(ammo, bgunGetCapacityByAmmotype(ammo));
+		} else if (boon->achievement == MODCAREER_BOON_AKIMBO) {
+			// Akimbo Pistol: the pistol this mission started with, now one in each hand
+			const s32 pistol = g_DefaultWeapons[HAND_RIGHT];
+
+			if (pistol > WEAPON_UNARMED && weaponHasFlag(pistol, WEAPONFLAG_DUALWIELD) && invGiveDoubleWeapon(pistol, pistol)) {
+				bgunEquipWeapon2(HAND_RIGHT, pistol);
+				bgunEquipWeapon2(HAND_LEFT, pistol);
+			} else {
+				hudmsgCreateWithFlags("This pistol cannot be dual wielded\n", HUDMSGTYPE_DEFAULT,
+						HUDMSGFLAG_ONLYIFALIVE | HUDMSGFLAG_ALLOWDUPES);
+			}
 		} else if (boon->achievement == -4) {
 			// Mine Layer: 3 of each mine (they are thrown from the quick throw)
 			static const s32 mines[] = { WEAPON_TIMEDMINE, WEAPON_PROXIMITYMINE, WEAPON_REMOTEMINE };

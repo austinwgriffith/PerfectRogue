@@ -99,7 +99,7 @@ s32 modCareerKillObjectives(void);
 
 // Boons: after each mission the player picks one for the missions that follow;
 // it applies to that one mission only.
-#define MODCAREER_NUM_OFFERS 8
+#define MODCAREER_NUM_OFFERS 10
 s32 modCareerBoonCount(void);          // how many are on offer this mission
 bool modCareerAchievementsShown(void); // true when there is a previous mission to list
 void modCareerAchievementText(s32 index, char *buf, size_t size); // line of the achievement list (3 of them)

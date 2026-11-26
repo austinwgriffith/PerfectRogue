@@ -10970,6 +10970,10 @@ void chrTickShoot(struct chrdata *chr, s32 handnum)
 							f32 spcc;
 
 							sp168 = func->speed * (1.0f / 0.6f) / 60.0f;
+
+							if (chr->hidden2 & CHRH2FLAG_BLONDREVENGE) {
+								sp168 *= 0.35f; // MOD: Mr Blonde's rockets fly slow, like the secondary fire
+							}
 							spcc = func->traveldist * (1.0f / 0.6f);
 
 							// AI bots are a bit smarter than solo chrs
