@@ -1160,6 +1160,19 @@ static void modCareerPoolBuild(void)
 				strcat(g_ModCareerOff, strlen(g_ModCareerOff) == 0 ? ",-4," : "-4,");
 			}
 		}
+
+		// Bunker 2 (2026-11-26): a designed level, off until ticked on the Gauntlet page
+		if (g_ModCareerPoolCount < MODCAREER_MAXPOOL) {
+			const bool firstBunker = strstr(g_ModCareerOff, ",-5,") == NULL;
+
+			modCareerPoolAdd(MODCAREER_KIND_GEN, LEVELGEN_POOLID(LG_LAYOUT_BUNKER2), "(GEN) Bunker 2");
+			if (firstBunker && !wason) {
+				modCareerPoolSetPicked(g_ModCareerPoolCount - 1, false);
+			}
+			if (firstBunker && strlen(g_ModCareerOff) + 4 < sizeof(g_ModCareerOff)) {
+				strcat(g_ModCareerOff, strlen(g_ModCareerOff) == 0 ? ",-5," : "-5,");
+			}
+		}
 	}
 #endif
 }
@@ -1585,7 +1598,7 @@ static bool modCareerEnter(void)
 		sysLogPrintf(LOG_NOTE, "gauntlet: generated level, layout %d, seed %u", layout, genseed);
 
 		// the entry's layout, for this level only (-1, an old entry: the seed's)
-		modLevelGenForceTheme((layout >= 0 && layout < LG_LAYOUT_COUNT) || layout == LG_LAYOUT_STATION ? layout : -1, -1);
+		modLevelGenForceTheme((layout >= 0 && layout < LG_LAYOUT_COUNT) || layout == LG_LAYOUT_STATION || layout == LG_LAYOUT_BUNKER2 ? layout : -1, -1);
 		started = levelgenStart(genseed, g_LevelGenSizeSetting);
 		modLevelGenForceTheme(-1, -1);
 

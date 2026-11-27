@@ -1653,6 +1653,48 @@ static const LgAesthetic g_LglAesthetics[LG_AESTH_ALL] = {
 		0, LGTEX_PW_HAZARD, 200,
 		0,
 	},
+	/* LG_AESTH_BUNKER2 (2026-11-26): a Severnaya bunker, sealed and cold.
+	 * Olive military concrete and grey-blue panels over smooth concrete and
+	 * grey vinyl, a steel-plated ceiling; strip-lit corridors; the control
+	 * hall's dark steel plates under olive panels; the computer and server
+	 * halls in pale lab panels; the vault in rust-red steel on tread plate;
+	 * the cells in bare block with hazard-striped sills; the generator room
+	 * in riveted steel */
+	{
+		{
+			{ { LGTEX_LAB_FLOOR, LGTEX_PANEL_GREY, LGTEX_LIGHT_PANELS }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 533, 800, 800 } },
+			{ { LGTEX_FLOOR_TILES_GREY, LGTEX_OFFICE_GREEN, LGTEX_CEILING_TILES }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 640, 800, 800 } },
+			{ { LGTEX_PANEL_DARK, LGTEX_PANEL_OLIVE, LGTEX_CEIL_METAL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 640, 800, 800 } },
+			{ { LGTEX_FLOOR_CONCRETE, LGTEX_BUNKER_OLIVE, LGTEX_CEIL_METAL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 533, 800, 800 } },
+			{ { LGTEX_TREAD_PLATE, LGTEX_BLOCKWORK, LGTEX_ROOF_STEEL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 400, 800, 800 } },
+			{ { LGTEX_FLOOR_CONCRETE, LGTEX_BUNKER_OLIVE, LGTEX_CEIL_METAL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 533, 800, 800 } },
+			{ { LGTEX_TREAD_PLATE, LGTEX_PANEL_RED, LGTEX_ROOF_STEEL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 400, 800, 800 } },
+			{ { LGTEX_FLOOR_CONCRETE, LGTEX_BLOCKWORK, LGTEX_CEIL_METAL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 533, 800, 800 } },
+			{ { LGTEX_PANEL_DARK, LGTEX_STEEL_RUST, LGTEX_ROOF_STEEL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 640, 800, 800 } },
+			{ { LGTEX_FLOOR_CONCRETE, LGTEX_BUNKER_OLIVE, LGTEX_CEIL_METAL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 533, 800, 800 } },
+			{ { LGTEX_FLOOR_CONCRETE, LGTEX_BUNKER_OLIVE, LGTEX_CEIL_METAL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 533, 800, 800 } },
+			{ { LGTEX_FLOOR_CONCRETE, LGTEX_BUNKER_OLIVE, LGTEX_CEIL_METAL }, { 0xc0080002u, 0xc0080002u, 0xc0080002u }, { 533, 800, 800 } },
+		},
+		{
+			{ 245, { 226, 244, 255 } },   /* the computer room, the server hall: cold white */
+			{ 232, { 240, 248, 236 } },   /* offices, barracks, lobby */
+			{ 236, { 232, 246, 232 } },   /* the control hall */
+			{ 226, { 232, 246, 232 } },   /* the ring: strip lights */
+			{ 222, { 244, 244, 232 } },   /* the armoury, the mess */
+			{ 215, { 255, 232, 208 } },   /* the vault: amber */
+			{ 205, { 236, 240, 232 } },   /* the cells: dim */
+			{ 225, { 255, 240, 212 } },   /* the generator room */
+			{ 226, { 232, 246, 232 } },
+			{ 226, { 232, 246, 232 } },
+			{ 226, { 232, 246, 232 } },
+			{ 226, { 232, 246, 232 } },
+		},
+		0x0190, 0xc0180002u, 100,
+		0x019c, 0x005d,
+		0, 0,
+		0, 0, 0,
+		0,
+	},
 };
 
 static const LgAesthetic *lglAesthetic(const LgLayout *lg);
@@ -4874,7 +4916,7 @@ static uint32_t lglFingerprint(uint32_t h, const LgBuf *f)
 
 static int lglLayoutSelfTestOne(int layout, int numseeds, void (*print)(const char *line))
 {
-	const char *tag = layout == LG_LAYOUT_LAB ? "-lab" : layout == LG_LAYOUT_STREET ? "-street" : layout == LG_LAYOUT_RAVINE ? "-ravine" : layout == LG_LAYOUT_ROOFTOP ? "-rooftop" : layout == LG_LAYOUT_PENTHOUSE ? "-penthouse" : layout == LG_LAYOUT_SITE ? "-site" : layout == LG_LAYOUT_PLAZA ? "-plaza" : layout == LG_LAYOUT_MALL ? "-mall" : layout == LG_LAYOUT_PIPEWORKS ? "-pipeworks" : layout == LG_LAYOUT_VILLA ? "-villa" : layout == LG_LAYOUT_STATION ? "-station" : "";
+	const char *tag = layout == LG_LAYOUT_BUNKER2 ? "-bunker2" : layout == LG_LAYOUT_LAB ? "-lab" : layout == LG_LAYOUT_STREET ? "-street" : layout == LG_LAYOUT_RAVINE ? "-ravine" : layout == LG_LAYOUT_ROOFTOP ? "-rooftop" : layout == LG_LAYOUT_PENTHOUSE ? "-penthouse" : layout == LG_LAYOUT_SITE ? "-site" : layout == LG_LAYOUT_PLAZA ? "-plaza" : layout == LG_LAYOUT_MALL ? "-mall" : layout == LG_LAYOUT_PIPEWORKS ? "-pipeworks" : layout == LG_LAYOUT_VILLA ? "-villa" : layout == LG_LAYOUT_STATION ? "-station" : "";
 	char line[300], err[200];
 	int failed = 0, passed = 0, size, s;
 	LgLayout *lg = (LgLayout *)malloc(sizeof(*lg));
@@ -4970,7 +5012,7 @@ int modLevelGenLayoutSelfTest(int numseeds, void (*print)(const char *line))
 	int layout, failed = 0;
 
 	for (layout = 0; layout < LG_LAYOUT_ALL; layout++) {
-		if (LG_LAYOUT_DESIGNED(layout)) continue;
+		if (LG_LAYOUT_DESIGNED(layout) || layout == LG_LAYOUT_BUNKER2) continue;
 		modLevelGenForceTheme(layout, -1);
 		failed += lglLayoutSelfTestOne(layout, numseeds, print);
 	}

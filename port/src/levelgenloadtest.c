@@ -335,7 +335,7 @@ static void lgtCheckPool(void)
 				&& !strcmp(modCareerPoolName(i), "(GEN) Switchback Station")) {
 			station = i;
 		}
-		if (layout > LG_LAYOUT_STATION) {
+		if (layout > LG_LAYOUT_BUNKER2) {
 			retiredMaps = true;
 		}
 	}

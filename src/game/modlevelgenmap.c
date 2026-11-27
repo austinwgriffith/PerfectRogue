@@ -889,6 +889,7 @@ int main(int argc, char **argv)
 	if (argc < 2) {
 		return modLevelGenMapSelfTest(20, lgmPrint) ? 1 : 0;
 	}
+	if (getenv("LGLAYOUT")) modLevelGenForceTheme(atoi(getenv("LGLAYOUT")), -1);
 	seed = (uint32_t)strtoul(argv[1], NULL, 10);
 	size = argc > 2 ? atoi(argv[2]) : 1;
 	count = argc > 3 ? atoi(argv[3]) : 1;

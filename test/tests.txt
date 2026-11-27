@@ -30,3 +30,4 @@ levelgen-tour-site | --levelgen-tour 23 --levelgen-size 1 --levelgen-layout 9
 levelgen-tour-mall | --levelgen-tour 41 --levelgen-size 0 --levelgen-layout 11
 levelgen-tour-pier | --levelgen-tour 17 --levelgen-size 1 --levelgen-layout 13
 levelgen-tour-trail | --levelgen-tour 17 --levelgen-size 1 --levelgen-layout 14
+levelgen-tour-bunker2 | --levelgen-tour 17 --levelgen-size 1 --levelgen-layout 16

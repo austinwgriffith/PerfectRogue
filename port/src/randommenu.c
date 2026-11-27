@@ -134,7 +134,7 @@ static s32 levelGenMenuLayout(s32 option)
 			return layout;
 		}
 	}
-	return LG_LAYOUT_STATION;
+	return option == LG_LAYOUT_COUNT ? LG_LAYOUT_BUNKER2 : LG_LAYOUT_STATION;   // (the last two: the station, then Bunker 2)
 }
 
 static MenuItemHandlerResult menuhandlerLevelGenLayout(s32 operation, struct menuitem *item, union handlerdata *data)
@@ -143,7 +143,7 @@ static MenuItemHandlerResult menuhandlerLevelGenLayout(s32 operation, struct men
 	case MENUOP_CHECKDISABLED:
 		return !levelgenIsStage(LEVELGEN_STAGENUM);
 	case MENUOP_GETOPTIONCOUNT:
-		data->dropdown.value = LG_LAYOUT_COUNT;   // Random, the layouts but the two removed, the station
+		data->dropdown.value = LG_LAYOUT_COUNT + 1;   // Random, the layouts but the two removed, the station, Bunker 2
 		break;
 	case MENUOP_GETOPTIONTEXT:
 		return (intptr_t)(data->dropdown.value == 0 ? "Random" : modLevelGenLayoutName(levelGenMenuLayout((s32)data->dropdown.value)));
@@ -154,7 +154,7 @@ static MenuItemHandlerResult menuhandlerLevelGenLayout(s32 operation, struct men
 		s32 k;
 
 		data->dropdown.value = 0;
-		for (k = 1; k < LG_LAYOUT_COUNT; k++) {
+		for (k = 1; k <= LG_LAYOUT_COUNT; k++) {
 			if (levelGenMenuLayout(k) == g_LevelGenLayoutSetting) {
 				data->dropdown.value = k;
 			}

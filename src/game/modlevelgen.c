@@ -3157,6 +3157,7 @@ static const int8_t g_LgCoverPools[LG_LAYOUT_ALL][8] = {
 	/* pier 17 */  { 0, 0, LG_PROP_BARREL, LG_PROP_BARREL, LG_PROP_HOVERCRATE, LG_PROP_BORGCRATE, LG_PROP_DUMPSTER, -1 },
 	/* hollow creek */ { -1 },   /* (dressed by hand: lgTryTrail) */
 	/* station */ { 0, LG_PROP_TROLLEY, LG_PROP_BARREL, -1 },
+	/* bunker 2 */ { 0, 0, LG_PROP_BORGCRATE, LG_PROP_BARREL, LG_PROP_TROLLEY, -1 },
 };
 static const int8_t g_LgFurnishPools[LG_LAYOUT_ALL][10] = {
 	/* hub */      { LG_PROP_DDDESK, LG_PROP_REDSOFA, LG_PROP_REDARM, LG_PROP_STONEDESK, LG_PROP_CICABINET, LG_PROP_PLANTRUBBER, LG_PROP_PLANTSPIDER, LG_PROP_DIVIDER, LG_PROP_G5CHAIR, -1 },
@@ -3175,6 +3176,7 @@ static const int8_t g_LgFurnishPools[LG_LAYOUT_ALL][10] = {
 	/* pier 17 */  { LG_PROP_DDDESK, LG_PROP_A51TABLE, LG_PROP_CICABINET, LG_PROP_TROLLEY, LG_PROP_DIVIDER, LG_PROP_G5CHAIR, LG_PROP_CITABLE, -1 },
 	/* hollow creek */ { LG_PROP_REDSOFA, LG_PROP_ARMCHAIR, LG_PROP_CITABLE, LG_PROP_LAMP, LG_PROP_BED, LG_PROP_CICABINET, LG_PROP_A51TABLE, LG_PROP_DDDESK, LG_PROP_PLANTSPIDER, -1 },
 	/* station */ { LG_PROP_REDSOFA, LG_PROP_REDARM, LG_PROP_CICABINET, LG_PROP_TROLLEY, -1 },
+	/* bunker 2 */ { LG_PROP_A51TABLE, LG_PROP_LABTABLE, LG_PROP_CICABINET, LG_PROP_DIVIDER, LG_PROP_TROLLEY, LG_PROP_G5CHAIR, -1 },
 };
 static const int8_t g_LgSetPieces[LG_LAYOUT_ALL][4] = {
 	/* hub */      { -1 },
@@ -3193,6 +3195,7 @@ static const int8_t g_LgSetPieces[LG_LAYOUT_ALL][4] = {
 	/* pier 17 */  { -1 },   /* (its own, by hand: lgTryPier) */
 	/* hollow creek */ { -1 },
 	/* station */ { -1 },
+	/* bunker 2 */ { -1 },
 };
 
 static int lgPoolPick(const int8_t *pool, int len, LgRng *r)
@@ -4163,6 +4166,7 @@ static int lgStUpperWindows(LgLayout *lg, char *err, int errlen)
 }
 
 #include "modlevelgenstation.inc"
+#include "modlevelgenbunker2.inc"
 
 /* The streets: two side by side outdoors, three rows of buildings along them */
 static int lgTryStreet(LgLayout *lg, const LgParams *p, LgRng *r, char *err, int errlen)
@@ -10842,6 +10846,7 @@ static const struct {
 	{ "Pier 17", { 0, 0, 0 }, 1u << LG_AESTH_HARBOUR },   /* (designed: lgTryPier) */
 	{ "Hollow Creek", { 0, 0, 0 }, 1u << LG_AESTH_WOODLAND },   /* (designed: lgTryTrail) */
 	{ "Switchback Station", { 0, 0, 0 }, 1u << LG_AESTH_STATION },
+	{ "Bunker 2", { 0, 0, 0 }, 1u << LG_AESTH_BUNKER2 },   /* (designed, 2026-11-26: lgTryBunker2) */
 	/* (2026-11-15, the user: "all our random generated maps should use custom
 	 * textures": every layout has its own look made of the generator's own
 	 * textures, tools/levelgen/lgtexgen.py; Placeholder and Chicago stay in
@@ -10874,6 +10879,7 @@ static const char *g_LgAestheticNames[LG_AESTH_ALL] = {
 	"Market",
 	"Mall",
 	"Pipeworks",
+	"Bunker",
 };
 
 const char *modLevelGenLayoutName(int layout)
@@ -10944,6 +10950,8 @@ static int lgTry(LgLayout *lg, const LgParams *p, LgRng *r, char *err, int errle
 	switch (lg->theme.layout) {
 	case LG_LAYOUT_STATION:
 		return lgTryStation(lg, r, err, errlen);
+	case LG_LAYOUT_BUNKER2:
+		return lgTryBunker2(lg, r, err, errlen);
 	case LG_LAYOUT_LAB:
 		return lgTryLab(lg, p, r, err, errlen);
 	case LG_LAYOUT_STREET:
@@ -10995,6 +11003,7 @@ int modLevelGenBuild(LgLayout *lg, const LgParams *p, char *err, int errlen)
 			: lg->theme.layout == LG_LAYOUT_STATION ? 64 + size * 6
 			: lg->theme.layout == LG_LAYOUT_ROOFTOP ? g_LgRooftop[size].grid
 			: lg->theme.layout == LG_LAYOUT_VILLA ? g_LgVilla[size].grid
+			: lg->theme.layout == LG_LAYOUT_BUNKER2 ? LG_BK_GRID
 			: lg->theme.layout == LG_LAYOUT_PIER ? LG_PIER_GRID
 			: lg->theme.layout == LG_LAYOUT_TRAIL ? LG_TRAIL_GRID
 			: lg->theme.layout == LG_LAYOUT_DOCKS ? g_LgDocksGrid[size]
@@ -11121,7 +11130,7 @@ int modLevelGenValidate(const LgLayout *lg, char *err, int errlen)
 		for (i = 0; i < lg->numareas; i++) {
 			nm += (lg->areas[i].flags & LG_AREAFLAG_MEZZ) != 0;
 		}
-		if (nm == 0 && lg->theme.layout != LG_LAYOUT_RAVINE && lg->theme.layout != LG_LAYOUT_PIPEWORKS && !LG_LAYOUT_SKYLIKE(lg->theme.layout) && lg->theme.layout != LG_LAYOUT_VILLA && !LG_LAYOUT_FLATBUILT(lg->theme.layout)) {   /* (a ravine's height is its ground; the rooftops', their towers) */
+		if (nm == 0 && lg->theme.layout != LG_LAYOUT_BUNKER2 && lg->theme.layout != LG_LAYOUT_RAVINE && lg->theme.layout != LG_LAYOUT_PIPEWORKS && !LG_LAYOUT_SKYLIKE(lg->theme.layout) && lg->theme.layout != LG_LAYOUT_VILLA && !LG_LAYOUT_FLATBUILT(lg->theme.layout)) {   /* (a ravine's height is its ground; the rooftops', their towers) */
 			lgSetErr(err, errlen, "no mezzanine (no room fits one)", 0, 0);
 			return 0;
 		}
@@ -11607,7 +11616,7 @@ int modLevelGenValidate(const LgLayout *lg, char *err, int errlen)
 			}
 		}
 
-		if (p->door && !p->doorway && p->door < LG_DOOR_LIFT) {   /* (a lift's: from its lobby into its shaft) */
+		if (p->door && !p->doorway && p->door < LG_DOOR_LIFT && lg->theme.layout != LG_LAYOUT_BUNKER2) {   /* (Bunker 2's blast doors cross its ring) */   /* (a lift's: from its lobby into its shaft) */
 			lgSetErr(err, errlen, "portal %d has a door but is not a doorway", i, 0);
 			return 0;
 		}
