@@ -1165,7 +1165,7 @@ static void modCareerPoolBuild(void)
 		if (g_ModCareerPoolCount < MODCAREER_MAXPOOL) {
 			const bool firstBunker = strstr(g_ModCareerOff, ",-5,") == NULL;
 
-			modCareerPoolAdd(MODCAREER_KIND_GEN, LEVELGEN_POOLID(LG_LAYOUT_BUNKER2), "(GEN) Bunker 2");
+			modCareerPoolAdd(MODCAREER_KIND_GEN, LEVELGEN_POOLID(LG_LAYOUT_BUNKER2), "(GEN) Bunker 3");
 			if (firstBunker && !wason) {
 				modCareerPoolSetPicked(g_ModCareerPoolCount - 1, false);
 			}

@@ -10846,7 +10846,7 @@ static const struct {
 	{ "Pier 17", { 0, 0, 0 }, 1u << LG_AESTH_HARBOUR },   /* (designed: lgTryPier) */
 	{ "Hollow Creek", { 0, 0, 0 }, 1u << LG_AESTH_WOODLAND },   /* (designed: lgTryTrail) */
 	{ "Switchback Station", { 0, 0, 0 }, 1u << LG_AESTH_STATION },
-	{ "Bunker 2", { 0, 0, 0 }, 1u << LG_AESTH_BUNKER2 },   /* (designed, 2026-11-26: lgTryBunker2) */
+	{ "Bunker 3", { 0, 0, 0 }, 1u << LG_AESTH_BUNKER2 },   /* (designed, 2026-11-26: lgTryBunker2) */
 	/* (2026-11-15, the user: "all our random generated maps should use custom
 	 * textures": every layout has its own look made of the generator's own
 	 * textures, tools/levelgen/lgtexgen.py; Placeholder and Chicago stay in
